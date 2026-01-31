@@ -719,6 +719,80 @@
       backdrop-filter: blur(10px);
     }
     .toast.show{ opacity:1; transform: translateY(0); }
+    /* In-app notifications (per-train reminders) */
+    .notifHost{
+      position:fixed;
+      top: 86px;
+      right: 16px;
+      width: min(420px, calc(100vw - 32px));
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      z-index:320;
+      pointer-events:none;
+    }
+    .notifCard{
+      pointer-events:auto;
+      background: rgba(255,255,255,.92);
+      border: 1px solid rgba(17,24,39,.14);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      overflow:hidden;
+    }
+    .notifTop{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:10px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,.78);
+      border-bottom: 1px solid rgba(17,24,39,.10);
+    }
+    .notifTitle{
+      font-weight: 950;
+      font-size: 13px;
+      letter-spacing:.2px;
+      line-height:1.2;
+    }
+    .notifMeta{
+      margin-top:4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 850;
+    }
+    .notifBody{
+      padding: 10px 12px;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 850;
+      line-height:1.35;
+      white-space:pre-wrap;
+    }
+    .notifActions{
+      padding: 10px 12px;
+      display:flex;
+      gap:10px;
+      justify-content:flex-end;
+      flex-wrap:wrap;
+      background: rgba(255,255,255,.78);
+      border-top: 1px solid rgba(17,24,39,.10);
+    }
+    .notifChip{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(17,24,39,.14);
+      background: rgba(255,255,255,.75);
+      font-size: 12px;
+      font-weight: 950;
+      font-family: var(--mono);
+    }
+    .notifChip .dot{ width:8px; height:8px; border-radius:50%; background: rgba(37,99,235,.85); }
+    .notifCard.level-warn .notifChip .dot{ background: var(--warn); }
+    .notifCard.level-bad .notifChip .dot{ background: var(--bad); }
+
 
     /* Leaflet container inside modal */
     #map { height: 520px; border-radius: 18px; overflow:hidden; border: 1px solid var(--stroke); }
@@ -863,6 +937,7 @@
 </main>
 
 <div class="toast" id="toast"></div>
+  <div id="notifHost" class="notifHost"></div>
 
 <!-- Universal Modal -->
 <div id="modalOverlay" class="modalOverlay">
@@ -925,6 +1000,223 @@ function toast(msg){
   clearTimeout(toast._tm);
   toast._tm = setTimeout(()=>t.classList.remove("show"), 2400);
 }
+
+
+/* =========================
+   IN-APP NOTIFICATIONS (per-train reminders)
+========================= */
+function ensureNotifHost(){
+  if (!notifHost) notifHost = $("notifHost");
+}
+function nowIso(){ return new Date().toISOString(); }
+
+function getTrainNotifState(train_id){
+  if (!notifState.has(train_id)) notifState.set(train_id, { m20:false, m30:false, m60:false, ack:{} });
+  return notifState.get(train_id);
+}
+
+function pushNotif({train, level="warn", title, body, actions=[] , key}){
+  ensureNotifHost();
+  const id = `${key || "n"}_${train?.id || "x"}_${Date.now()}_${notifSeq++}`;
+  const card = document.createElement("div");
+  card.className = `notifCard level-${level}`;
+  const hc = (train?.headcode || train?.train_id || "TRAIN").toString().toUpperCase();
+  const meta = `${hc} · ${fmtAgeMins(train?.stranded_at || train?.created_at || nowIso())}`;
+  card.innerHTML = `
+    <div class="notifTop">
+      <div>
+        <div class="notifTitle">${escapeHtml(title)}</div>
+        <div class="notifMeta"><span class="notifChip"><span class="dot"></span>${escapeHtml(meta)}</span></div>
+      </div>
+      <button class="iconBtn" title="Dismiss" aria-label="Dismiss notification">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 6 6 18"/><path d="M6 6 18 18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="notifBody">${escapeHtml(body)}</div>
+    <div class="notifActions"></div>
+  `;
+  const dismissBtn = card.querySelector("button.iconBtn");
+  dismissBtn.onclick = ()=> card.remove();
+
+  const acts = card.querySelector(".notifActions");
+  (actions || []).forEach(a=>{
+    const b = document.createElement("button");
+    b.className = a.primary ? "btn" : "btn ghost";
+    b.textContent = a.label || "Open";
+    b.onclick = ()=>{
+      try{ a.onClick && a.onClick(); }catch(err){ console.warn(err); }
+      if (a.dismiss !== false) card.remove();
+    };
+    acts.appendChild(b);
+  });
+  // Always include an acknowledge action
+  if (!(actions||[]).some(a=>a.kind==="ack")){
+    const ack = document.createElement("button");
+    ack.className = "btn ghost";
+    ack.textContent = "Acknowledge";
+    ack.onclick = ()=>card.remove();
+    acts.appendChild(ack);
+  }
+
+  notifHost.prepend(card);
+}
+
+function fmtAgeMins(iso){
+  if (!iso) return "0m";
+  const t = new Date(iso).getTime();
+  const mins = Math.max(0, Math.floor((Date.now() - t)/60000));
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins/60);
+  const m = mins % 60;
+  return `${h}h ${m}m`;
+}
+
+function hasAnyPlanData(tr){
+  const plans = tr?.plans || {};
+  return ["A","B","C"].some(k=>{
+    const p = plans[k] || {};
+    return Object.values(p).some(v=> (v ?? "").toString().trim() !== "");
+  });
+}
+function hasPreferredAndExecuting(tr){
+  const pref = (tr?.plan_preferred || "").toString().trim();
+  if (!pref) return false;
+  const st = (tr?.plan_status || "").toString().toLowerCase();
+  return st === "executing";
+}
+function isMatrixComplete(tr){
+  // Best-effort: if matrix JSON exists or computed score exists
+  if (tr?.matrix_score != null) return true;
+  const m = tr?.risk_matrix || tr?.matrix || null;
+  if (!m) return false;
+  if (typeof m === "string") return m.trim().length > 0;
+  if (typeof m === "object") return Object.keys(m).length > 0;
+  return false;
+}
+function isWelfareComplete(tr){
+  // Best-effort: treat as complete if at least one welfare field is set beyond defaults
+  const w = tr?.welfare || {};
+  const fields = ["toilets","hvac","power","water","food","crowding","vulnerable_pax","medical_needs"];
+  return fields.some(k=>{
+    const v = w[k];
+    if (v == null) return false;
+    if (typeof v === "boolean") return v === true;
+    return (v+"").trim() !== "" && (v+"").toLowerCase() !== "unknown";
+  });
+}
+
+function checkTrainMilestones(){
+  if (!incident || !incident_key) return;
+  const now = Date.now();
+
+  trains.forEach(tr=>{
+    if (!tr) return;
+    if ((tr.status || "").toLowerCase() === "closed") return;
+
+    const t0 = new Date(tr.stranded_at || tr.created_at || incident.started_at || nowIso()).getTime();
+    const mins = Math.floor((now - t0)/60000);
+    const ns = getTrainNotifState(tr.id);
+
+    // Ensure we always have a sensible next assessment time (drives tile line + auto reminders)
+    if (!tr.next_review_at){
+      const iso = new Date(t0 + 20*60000).toISOString();
+      patchTrain(tr.id, { next_review_at: iso });
+    }
+
+    // Advance schedule markers even if no reminder is needed
+    if (mins >= 20 && !ns.sched30){
+      ns.sched30 = true;
+      patchTrain(tr.id, { next_review_at: new Date(t0 + 30*60000).toISOString() });
+    }
+    if (mins >= 30 && !ns.sched60){
+      ns.sched60 = true;
+      patchTrain(tr.id, { next_review_at: new Date(t0 + 60*60000).toISOString() });
+    }
+    if (mins >= 60 && !ns.schedCycle){
+      ns.schedCycle = true;
+      patchTrain(tr.id, { next_review_at: new Date(now + 20*60000).toISOString() });
+    }
+
+
+    // 20m: complete RAG + welfare if missing
+    if (mins >= 20 && !ns.m20 && (!isMatrixComplete(tr) || !isWelfareComplete(tr))){
+      ns.m20 = true;
+      pushNotif({
+        train: tr,
+        level: "warn",
+        title: "20 min check",
+        body: "Complete RAG and Welfare/System data so we’re not guessing under pressure.",
+        actions: [
+          {label:"Open RAG", primary:true, onClick: ()=> openMatrixModal(tr.id)},
+          {label:"Open Welfare", onClick: ()=> openWelfareModal(tr.id)},
+        ],
+        key: "m20"
+      });
+    }
+
+    // 30m: plan needs formulating if no plan data
+    if (mins >= 30 && !ns.m30 && !hasAnyPlanData(tr)){
+      ns.m30 = true;
+      pushNotif({
+        train: tr,
+        level: "warn",
+        title: "30 min check",
+        body: "No plan details captured yet. Start building Plan A/B/C.",
+        actions: [
+          {label:"Open Plans", primary:true, onClick: ()=> openPlanModal(tr.id)},
+        ],
+        key: "m30"
+      });
+    }
+
+    // 60m: nominate + execute plan (also becomes the repeating 20-min cycle thereafter)
+    if (mins >= 60 && !ns.m60 && !hasPreferredAndExecuting(tr)){
+      ns.m60 = true;
+      pushNotif({
+        train: tr,
+        level: "bad",
+        title: "1 hour escalation",
+        body: "A preferred plan should be nominated and moved to EXECUTING.",
+        actions: [
+          {label:"Open Plans", primary:true, onClick: ()=> openPlanModal(tr.id)},
+          {label:"Open Plan Summary", onClick: ()=> openPlanSummaryModal(tr.id)},
+        ],
+        key: "m60"
+      });
+    }
+
+    // Post-1h: every 20 mins, remind to re-check plan relevance + progress
+    if (mins >= 60){
+      const due = tr.next_review_at ? new Date(tr.next_review_at).getTime() : null;
+
+      // Debounce so we don't spam if renders happen quickly
+      if (due && now >= due && (!ns.lastCycleAt || (now - ns.lastCycleAt) > 60*1000)){
+        ns.lastCycleAt = now;
+        pushNotif({
+          train: tr,
+          level: "warn",
+          title: "Plan review cycle",
+          body: "Check the plan is still relevant, update status, and confirm next actions.",
+          actions: [
+            {label:"Open Plans", primary:true, onClick: ()=> openPlanModal(tr.id)},
+            {label:"Plan Summary", onClick: ()=> openPlanSummaryModal(tr.id)},
+          ],
+          key: "cycle"
+        });
+
+        patchTrain(tr.id, { next_review_at: new Date(now + 20*60000).toISOString() });
+      }
+    }
+  });
+}
+
+function startNotifLoop(){
+  if (notifTimer) clearInterval(notifTimer);
+  notifTimer = setInterval(checkTrainMilestones, 10000);
+}
+
 
 function escapeHtml(s){
   s = (s ?? "").toString();
@@ -1104,8 +1396,15 @@ function ragBadgeClass(rag){
 ========================= */
 const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
 
+function lsGet(key, fallback=""){
+  try{ const v = localStorage.getItem(key); return v==null?fallback:v; }catch(e){ return fallback; }
+}
+function lsSet(key, value){
+  try{ localStorage.setItem(key, value); }catch(e){ /* ignored */ }
+}
+
 let incident_key = "";
-let org_context = localStorage.getItem("star_org") || "";
+let org_context = lsGet("star_org","");
 let trains = [];
 let notesByTrain = new Map();
 let incident = null;
@@ -1119,6 +1418,14 @@ let incidentTimer = null;
 
 let chTrains = null;
 let chNotes = null;
+
+// In-app per-train notifications (milestone reminders)
+let notifHost = null;
+let notifSeq = 1;
+// Track which reminders have already fired per train (in-memory; best-effort persisted to DB if column exists)
+const notifState = new Map(); // train_id -> {m20:true, m30:true, m60:true, ack:[...]}
+let notifTimer = null;
+
 
 /* =========================
    INCIDENT KEY
@@ -2621,7 +2928,7 @@ function openAddTrainModal(){
       location_risk: "unknown",
       stranded_at: nowISO(),
       plan_status: "none",
-      next_review_at: new Date(Date.now() + 10*60000).toISOString(),
+      next_review_at: new Date(Date.now() + 20*60000).toISOString(),
       pax_load: "unknown",
       hvac_status: "unknown",
       toilet_status: "unknown",
@@ -2935,7 +3242,7 @@ function initUI(){
   $("orgSelect").value = org_context;
   $("orgSelect").addEventListener("change", ()=>{
     org_context = $("orgSelect").value;
-    localStorage.setItem("star_org", org_context);
+    lsSet("star_org", org_context);
     toast("Org context set");
     computeAndRenderAll();
   });
@@ -2987,6 +3294,8 @@ function initUI(){
   await ensureIncident();
   await loadAll();
   subscribeRealtime();
+  ensureNotifHost();
+  startNotifLoop();
   // Fallback refresh (in case Realtime isn't enabled on the tables)
   setInterval(async ()=>{ await loadAll(); }, 20000);
 })();
