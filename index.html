@@ -943,9 +943,119 @@ function relTime(iso){
 }
 
 /* =========================
-   RISK (simple, explainable)
+   RISK (Excel-aligned matrix + legacy fallback)
+   - Primary: Risk Matrix (On-board + Location + Traction) as per Stranded Train RA.xlsm
+   - Fallback: legacy time-driven score if matrix inputs not captured yet
 ========================= */
-function riskFromTrain(train){
+const RM = {
+  // A) On-board triage
+  pax_loading: {
+    standing: 3,
+    seated: 2,
+    seats_available: 1
+  },
+  traction_power_available: { available: 1, not_available: 5 },
+  toilets: { working: 0, no_working: 3 },
+  vulnerable: { low: 1, moderate: 3, significant: 5 },
+  onboard_env: { comfortable: 0, not_comfortable: 3 },
+
+  // B) Location triage
+  proximity_station: { "400m": 4, "800m": 2, over_800m: 1 },
+  proximity_depot: { "400m": 3, "800m": 2, over_800m: 1 },
+  other_transport: { yes: 5, no: 0 },
+  egress_view: { yes: 5, no: 0 },
+  outside_env: { poor: 0, good: 3 }, // note: this is per the spreadsheet (good adds score)
+
+  // C) Traction risks triage
+  train_type: { electric: 5, bimode: 1, diesel: 1 },
+  traction_current: { switched_on: 5, switched_off: 1, non_electrified: 0 },
+  staff_onboard: { one: 5, two_to_four: 3, more_than_four: 1 },
+  comms: { none: 5, mobile: 3, gsmr: 1 },
+  hvac_lighting: { yes: 1, no: 5 },
+
+  thresholds: { red_gt: 23, amber_min: 12 } // total >23 red; 12-22 amber; <12 green
+};
+
+function parseRiskMatrix(train){
+  const raw = train?.risk_matrix;
+  if (!raw) return null;
+  if (typeof raw === "object") return raw;
+  if (typeof raw === "string"){
+    try{
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === "object") return obj;
+    }catch(e){}
+  }
+  return null;
+}
+
+function computeMatrixRisk(train){
+  const rm = parseRiskMatrix(train) || null;
+
+  // Prefer dedicated columns if they exist; else try risk_matrix JSON.
+  const get = (k, fallback=null) => {
+    const v = (train && train[k] != null) ? train[k] : (rm ? rm[k] : null);
+    return (v == null || v === "") ? fallback : v;
+  };
+
+  const picks = {
+    pax_loading: get("rm_pax_loading", null),
+    traction_power_available: get("rm_traction_power_available", null),
+    toilets: get("rm_toilets", null),
+    vulnerable: get("rm_vulnerable", null),
+    onboard_env: get("rm_onboard_env", null),
+
+    proximity_station: get("rm_proximity_station", null),
+    proximity_depot: get("rm_proximity_depot", null),
+    other_transport: get("rm_other_transport", null),
+    egress_view: get("rm_egress_view", null),
+    outside_env: get("rm_outside_env", null),
+
+    train_type: get("rm_train_type", null),
+    traction_current: get("rm_traction_current", null),
+    staff_onboard: get("rm_staff_onboard", null),
+    comms: get("rm_comms", null),
+    hvac_lighting: get("rm_hvac_lighting", null),
+  };
+
+  const points = (map, val) => (val && map[val] != null) ? Number(map[val]) : 0;
+
+  const onboard =
+    points(RM.pax_loading, picks.pax_loading) +
+    points(RM.traction_power_available, picks.traction_power_available) +
+    points(RM.toilets, picks.toilets) +
+    points(RM.vulnerable, picks.vulnerable) +
+    points(RM.onboard_env, picks.onboard_env);
+
+  const location =
+    points(RM.proximity_station, picks.proximity_station) +
+    points(RM.proximity_depot, picks.proximity_depot) +
+    points(RM.other_transport, picks.other_transport) +
+    points(RM.egress_view, picks.egress_view) +
+    points(RM.outside_env, picks.outside_env);
+
+  const traction =
+    points(RM.train_type, picks.train_type) +
+    points(RM.traction_current, picks.traction_current) +
+    points(RM.staff_onboard, picks.staff_onboard) +
+    points(RM.comms, picks.comms) +
+    points(RM.hvac_lighting, picks.hvac_lighting);
+
+  const total = onboard + location + traction;
+
+  // We consider the matrix "captured" once at least 1 matrix field is set.
+  const captured = Object.values(picks).some(v => v != null && v !== "");
+
+  if (!captured) return null;
+
+  let rag = "green";
+  if (total > RM.thresholds.red_gt) rag = "red";
+  else if (total >= RM.thresholds.amber_min) rag = "amber";
+
+  return { rag, score: total, onboard, location, traction, picks, mode: "matrix" };
+}
+
+function computeLegacyRisk(train){
   const baseStart = train.stranded_at || train.created_at;
   const mins = minutesBetween(baseStart, nowISO());
   let score = 0;
@@ -970,9 +1080,13 @@ function riskFromTrain(train){
   if (train.plan_status === "agreed") score -= 1;
   if (train.plan_status === "executing") score -= 2;
 
-  if (score >= 8) return { rag:"red", score };
-  if (score >= 4) return { rag:"amber", score };
-  return { rag:"green", score };
+  if (score >= 8) return { rag:"red", score, mode:"legacy" };
+  if (score >= 4) return { rag:"amber", score, mode:"legacy" };
+  return { rag:"green", score, mode:"legacy" };
+}
+
+function riskFromTrain(train){
+  return computeMatrixRisk(train) || computeLegacyRisk(train);
 }
 
 function ragBadgeClass(rag){
@@ -1350,12 +1464,11 @@ function renderMenuModal(train){
   setModalHeader(`Train ${train.headcode} modules`, `Risk ${risk.score} · ${risk.rag.toUpperCase()} · Acting as ${org_context || "Not set"}`);
 
   const sections = [
-    { key:"core",  name:"Core details",      desc:"Status, TOC, line, location text" },
-    { key:"plan",  name:"Plan & cadence",    desc:"Plan status, next assessment" },
-    { key:"welfare", name:"Welfare & systems", desc:"Pax load, HVAC, toilets, power" },
-    { key:"hazards", name:"Hazards & vulnerable pax", desc:"Tick hazards to drive icons + risk" },
-    { key:"location", name:"Exact location", desc:"Map pin + weather" },
-    { key:"notes", name:"Notes",            desc:"Add note + view more" },
+    { key:"core",  name:"Core details",      desc:"Headcode context, TOC, line, location label" },
+    { key:"matrix", name:"Risk Matrix (RAG)", desc:"Excel-aligned scoring: On-board + Location + Traction" },
+    { key:"plan",  name:"Plans (A/B/C)",     desc:"Build Plan A/B/C, set preferred option, actioning state + cadence" },
+    { key:"location", name:"Exact location", desc:"Map pin + nearest place + live weather" },
+    { key:"notes", name:"Notes",            desc:"Add note + view history" },
     { key:"close", name:"Close train",      desc:"Mark train closed" }
   ];
 
@@ -1387,9 +1500,8 @@ function renderMenuModal(train){
 function openSectionModal(train, section){
   activeTrain = train;
   if (section === "core") return openCoreModal(train);
+  if (section === "matrix") return openRiskMatrixModal(train);
   if (section === "plan") return openPlanModal(train);
-  if (section === "welfare") return openWelfareModal(train);
-  if (section === "hazards") return openHazardsModal(train);
   if (section === "location") return openLocationModal(train);
   if (section === "notes") return openNotesModal(train);
 }
@@ -1461,72 +1573,506 @@ function openCoreModal(train){
   };
 }
 
-function openPlanModal(train){
-  setModalHeader(`Plan & cadence · ${train.headcode}`, "Plan state + next assessment. That's the game.");
-  const reviewIso = train.next_review_at ? new Date(train.next_review_at).toISOString() : new Date(Date.now()+10*60000).toISOString();
-  setModalBody(`
-    <div class="uiCard">
-      <div class="uiLabel">Plan status</div>
-      <div class="seg">
-        ${segButton("None","none",train.plan_status||"none","plan")}
-        ${segButton("Forming","forming",train.plan_status||"none","plan")}
-        ${segButton("Agreed","agreed",train.plan_status||"none","plan")}
-        ${segButton("Executing","executing",train.plan_status||"none","plan")}
-      </div>
-    </div>
+function openRiskMatrixModal(train){
+  showModal(true);
+  const rm = parseRiskMatrix(train) || {};
+  setModalHeader(`Risk Matrix (Excel) · ${train.headcode}`, "On-board + Location + Traction → Total score → RAG");
 
-    <div class="uiGrid2">
-      <div class="uiCard">
-        <div class="uiLabel">Next assessment</div>
-        <div class="seg">
-          ${segButton("+10 mins","10","", "review")}
-          ${segButton("+20 mins","20","", "review")}
-          ${segButton("+30 mins","30","", "review")}
-          ${segButton("+60 mins","60","", "review")}
-        </div>
-        <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:8px;">
-          Current: <span style="font-family:var(--mono);">${train.next_review_at ? new Date(train.next_review_at).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}) : "—"}</span>
-        </div>
-      </div>
+  // local draft (do not mutate train until save)
+  const draft = {
+    rm_pax_loading: train.rm_pax_loading ?? rm.rm_pax_loading ?? null,
+    rm_traction_power_available: train.rm_traction_power_available ?? rm.rm_traction_power_available ?? null,
+    rm_toilets: train.rm_toilets ?? rm.rm_toilets ?? null,
+    rm_vulnerable: train.rm_vulnerable ?? rm.rm_vulnerable ?? null,
+    rm_onboard_env: train.rm_onboard_env ?? rm.rm_onboard_env ?? null,
 
+    rm_proximity_station: train.rm_proximity_station ?? rm.rm_proximity_station ?? null,
+    rm_proximity_depot: train.rm_proximity_depot ?? rm.rm_proximity_depot ?? null,
+    rm_other_transport: train.rm_other_transport ?? rm.rm_other_transport ?? null,
+    rm_egress_view: train.rm_egress_view ?? rm.rm_egress_view ?? null,
+    rm_outside_env: train.rm_outside_env ?? rm.rm_outside_env ?? null,
+
+    rm_train_type: train.rm_train_type ?? rm.rm_train_type ?? null,
+    rm_traction_current: train.rm_traction_current ?? rm.rm_traction_current ?? null,
+    rm_staff_onboard: train.rm_staff_onboard ?? rm.rm_staff_onboard ?? null,
+    rm_comms: train.rm_comms ?? rm.rm_comms ?? null,
+    rm_hvac_lighting: train.rm_hvac_lighting ?? rm.rm_hvac_lighting ?? null,
+  };
+
+  const optionRow = (label, key, opts) => {
+    const current = draft[key] ?? "";
+    const btns = Object.entries(opts).map(([val, pts])=>{
+      const active = (val === current) ? "active" : "";
+      return `<button class="${active}" data-rm="${key}" data-val="${val}">${val.replaceAll('_',' ').replaceAll('to','–')} <span style="opacity:.65;">(${pts})</span></button>`;
+    }).join("");
+    return `
       <div class="uiCard">
-        <div class="uiLabel">Location risk</div>
-        <div class="seg">
-          ${segButton("Unknown","unknown",train.location_risk||"unknown","locrisk")}
-          ${segButton("Open line","openline",train.location_risk||"unknown","locrisk")}
-          ${segButton("Tunnel","tunnel",train.location_risk||"unknown","locrisk")}
-          ${segButton("Viaduct","viaduct",train.location_risk||"unknown","locrisk")}
-          ${segButton("Remote","remote",train.location_risk||"unknown","locrisk")}
+        <div class="uiLabel">${escapeHtml(label)}</div>
+        <div class="seg" data-rm-seg="${key}">${btns}</div>
+      </div>
+    `;
+  };
+
+  const summaryBlock = ()=>{
+    const fakeTrain = { ...train, ...draft, risk_matrix: JSON.stringify(draft) };
+    const r = computeMatrixRisk(fakeTrain) || { rag:"green", score:0, onboard:0, location:0, traction:0, mode:"matrix" };
+    const cls = ragBadgeClass(r.rag);
+    return `
+      <div class="uiCard" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div>
+          <div style="font-weight:950; font-size:14px;">Immediate RAG (Matrix)</div>
+          <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:2px;">
+            On-board <span style="font-family:var(--mono);">${r.onboard}</span> · Location <span style="font-family:var(--mono);">${r.location}</span> · Traction <span style="font-family:var(--mono);">${r.traction}</span>
+          </div>
+        </div>
+        <div class="badge ${cls}" style="font-size:13px;">
+          <span class="dot"></span>
+          ${r.rag.toUpperCase()} · ${r.score}
         </div>
       </div>
-    </div>
+    `;
+  };
+
+  const tabs = [
+    { key:"onboard", name:"On-board" },
+    { key:"location", name:"Location" },
+    { key:"traction", name:"Traction" },
+  ];
+
+  const renderTab = (tabKey)=>{
+    let body = summaryBlock();
+    if (tabKey === "onboard"){
+      body += `
+        <div class="uiGrid2">
+          ${optionRow("Passenger loading", "rm_pax_loading", RM.pax_loading)}
+          ${optionRow("Traction power availability (train)", "rm_traction_power_available", RM.traction_power_available)}
+          ${optionRow("Toilet availability", "rm_toilets", RM.toilets)}
+          ${optionRow("Vulnerable passengers", "rm_vulnerable", RM.vulnerable)}
+          ${optionRow("On-board environment", "rm_onboard_env", RM.onboard_env)}
+        </div>
+      `;
+    }
+    if (tabKey === "location"){
+      body += `
+        <div class="uiGrid2">
+          ${optionRow("Proximity to station", "rm_proximity_station", RM.proximity_station)}
+          ${optionRow("Proximity to depot", "rm_proximity_depot", RM.proximity_depot)}
+          ${optionRow("Easy access to other transport", "rm_other_transport", RM.other_transport)}
+          ${optionRow("View of obvious egress area", "rm_egress_view", RM.egress_view)}
+          ${optionRow("Outside environment", "rm_outside_env", RM.outside_env)}
+        </div>
+      `;
+    }
+    if (tabKey === "traction"){
+      body += `
+        <div class="uiGrid2">
+          ${optionRow("Type of train", "rm_train_type", RM.train_type)}
+          ${optionRow("Traction current (OLE live)", "rm_traction_current", RM.traction_current)}
+          ${optionRow("Number of railway staff onboard", "rm_staff_onboard", RM.staff_onboard)}
+          ${optionRow("Communication with train", "rm_comms", RM.comms)}
+          ${optionRow("HVAC & passenger lighting working", "rm_hvac_lighting", RM.hvac_lighting)}
+        </div>
+      `;
+    }
+    setModalBody(`
+      <div class="uiCard">
+        <div class="uiLabel">Section</div>
+        <div class="seg" id="rmTabs">
+          ${tabs.map(t=>`<button class="${t.key===tabKey?'active':''}" data-rmtab="${t.key}">${t.name}</button>`).join("")}
+        </div>
+      </div>
+      ${body}
+      <div class="uiCard">
+        <div class="uiLabel">Matrix rules</div>
+        <div style="color:var(--muted); font-size:12px; font-weight:900; line-height:1.35;">
+          Total score thresholds: <b>Red</b> if &gt; ${RM.thresholds.red_gt}, <b>Amber</b> if ${RM.thresholds.amber_min}–${RM.thresholds.red_gt}, <b>Green</b> if &lt; ${RM.thresholds.amber_min}.
+        </div>
+      </div>
+    `);
+
+    // bind tab buttons
+    document.querySelectorAll("[data-rmtab]").forEach(b=>{
+      b.onclick = ()=> renderTab(b.getAttribute("data-rmtab"));
+    });
+
+    // bind option buttons
+    document.querySelectorAll("[data-rm]").forEach(b=>{
+      b.onclick = ()=>{
+        const k = b.getAttribute("data-rm");
+        const v = b.getAttribute("data-val");
+        draft[k] = v;
+
+        // set active styling within that row
+        document.querySelectorAll(`[data-rm-seg="${k}"] button`).forEach(x=>x.classList.remove("active"));
+        b.classList.add("active");
+
+        // Re-render same tab to refresh summary numbers
+        renderTab(tabKey);
+      };
+    });
+  };
+
+  renderTab("onboard");
+
+  setModalActions(`
+    <button class="btn" id="backToMenuBtn">Back</button>
+    <button class="btn primary" id="saveMatrixBtn">Save</button>
   `);
+
+  $("backToMenuBtn").onclick = ()=>renderMenuModal(train);
+
+  $("saveMatrixBtn").onclick = async ()=>{
+    const matrixJson = JSON.stringify(draft);
+
+    // Optional: derive the existing welfare/system fields so icons work even if user only uses matrix.
+    const derived = {};
+    if (draft.rm_toilets === "no_working") derived.toilet_status = "failed";
+    if (draft.rm_toilets === "working") derived.toilet_status = "ok";
+
+    if (draft.rm_traction_power_available === "not_available") derived.power_status = "failed";
+    if (draft.rm_traction_power_available === "available") derived.power_status = "ok";
+
+    if (draft.rm_hvac_lighting === "no") derived.hvac_status = "failed";
+    if (draft.rm_hvac_lighting === "yes") derived.hvac_status = "ok";
+
+    if (draft.rm_pax_loading === "standing") derived.pax_load = "high";
+    if (draft.rm_pax_loading === "seated") derived.pax_load = "med";
+    if (draft.rm_pax_loading === "seats_available") derived.pax_load = "low";
+
+    const patch = {
+      risk_matrix: matrixJson,
+      ...derived
+    };
+
+    // If your DB has dedicated rm_* columns, we'll try to write them too.
+    Object.assign(patch, draft);
+
+    // Attempt save. If rm_* columns don't exist, DB will reject. We'll fall back to risk_matrix only.
+    const { error } = await sb.from("star_trains").update({ ...patch, updated_at: nowISO(), updated_by_org: (org_context||null) }).eq("id", train.id).eq("incident_key", incident_key);
+    if (error){
+      console.warn("Matrix save full patch failed, retrying minimal:", error);
+      const { error: e2 } = await sb.from("star_trains").update({ risk_matrix: matrixJson, ...derived, updated_at: nowISO(), updated_by_org: (org_context||null) }).eq("id", train.id).eq("incident_key", incident_key);
+      if (e2){
+        console.error(e2);
+        toast("Matrix save failed (add risk_matrix column + RLS update)");
+        return;
+      }
+    }
+
+    // Refresh local state
+    await loadAll();
+    computeAndRenderAll();
+    toast("Risk Matrix saved");
+    renderMenuModal(trains.find(t=>t.id===train.id) || train);
+  };
+}
+
+
+function openPlanModal(train){
+  showModal(true);
+  setModalHeader(`Plans (A/B/C) · ${train.headcode}`, "Build options fast. Status auto-sets: forming → agreed → executing.");
+
+  // Plan data lives as JSON in plan_data (text). If the column doesn't exist, we'll still run UI and warn on save.
+  const parsePlanData = (t)=>{
+    const raw = t?.plan_data;
+    if (!raw) return { A:{}, B:{}, C:{}, meta:{} };
+    if (typeof raw === "object") return raw;
+    if (typeof raw === "string"){
+      try{
+        const obj = JSON.parse(raw);
+        if (obj && typeof obj === "object") return obj;
+      }catch(e){}
+    }
+    return { A:{}, B:{}, C:{}, meta:{} };
+  };
+
+  const pd = parsePlanData(train);
+  pd.A = pd.A || {};
+  pd.B = pd.B || {};
+  pd.C = pd.C || {};
+  pd.meta = pd.meta || {};
+
+  let activeTab = pd.meta.activeTab || "A";
+  let preferred = pd.meta.preferred || (train.plan_preferred || "none");
+  let actioning = !!pd.meta.actioning;
+
+  const PLAN = {
+    aim: {
+      hold_manage: "Hold & manage onboard",
+      move_train: "Move train under own power",
+      rescue_assist: "Assist / rescue movement",
+      detrain_platform: "Detrain to platform",
+      detrain_trackside: "Detrain trackside"
+    },
+    approach: {
+      stable: "Stabilise + reassure (comms/welfare)",
+      reset: "Reset / fault-find for movement",
+      tow: "Tow / assist movement",
+      wrong_road: "Wrong-road / special routing",
+      evacuate: "Evacuation managed"
+    },
+    egress: {
+      none: "No egress",
+      to_platform: "To platform",
+      to_station: "Trackside to station",
+      to_road: "Trackside to road access",
+      to_poi: "To place of safety"
+    },
+    resources: {
+      tolo: "TOLO",
+      btp: "BTP",
+      frs: "Fire & Rescue",
+      amb: "Ambulance",
+      rrv: "RRV / access",
+      ops: "NR Ops",
+      sta: "Station staff",
+      mep: "M/EP response",
+      snt: "S&T support"
+    },
+    review: { "10":"10m", "20":"20m", "30":"30m", "60":"60m" }
+  };
+
+  const hasAnyValue = (obj)=>{
+    if (!obj) return false;
+    for (const [k,v] of Object.entries(obj)){
+      if (v == null) continue;
+      if (typeof v === "string" && v.trim() !== "") return true;
+      if (typeof v === "boolean" && v) return true;
+      if (Array.isArray(v) && v.length) return true;
+      if (typeof v === "object" && !Array.isArray(v) && hasAnyValue(v)) return true;
+    }
+    return false;
+  };
+
+  const computePlanStatus = ()=>{
+    if (actioning) return "executing";
+    if (preferred && preferred !== "none") return "agreed";
+    if (hasAnyValue(pd.A) || hasAnyValue(pd.B) || hasAnyValue(pd.C)) return "forming";
+    return "none";
+  };
+
+  const setSegActive = (group, val)=>{
+    document.querySelectorAll(`[data-seg="${group}"]`).forEach(b=>{
+      b.classList.toggle("active", b.getAttribute("data-val") === val);
+    });
+  };
+
+  const renderPlanTab = (key)=>{
+    const p = pd[key] || (pd[key] = {});
+    const res = new Set((p.resources || []));
+    const mkSeg = (group, current, map)=>{
+      return `<div class="seg" style="flex-wrap:wrap;">
+        ${Object.entries(map).map(([val,label])=>segButton(label, val, current || "", group)).join("")}
+      </div>`;
+    };
+
+    const mkToggle = (id, label)=>{
+      const on = res.has(id) ? "1" : "0";
+      return `
+        <div class="toggleRow" data-res="${id}" data-on="${on}">
+          <div class="left">
+            <div class="name">${escapeHtml(label)}</div>
+            <div class="desc">Tap to toggle</div>
+          </div>
+          <div class="togglePill" aria-hidden="true"></div>
+        </div>
+      `;
+    };
+
+    const statusNow = computePlanStatus();
+    const cls = ragBadgeClass((train.plan_status==="executing")?"red":(train.plan_status==="agreed")?"amber":"green");
+
+    setModalBody(`
+      <div class="uiCard" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div>
+          <div style="font-weight:950;">Plan status</div>
+          <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:2px;">
+            Auto-calculated on save.
+          </div>
+        </div>
+        <div class="badge ${cls}">
+          <span class="dot"></span>
+          ${escapeHtml(statusNow.toUpperCase())}
+        </div>
+      </div>
+
+      <div class="uiCard">
+        <div class="uiLabel">Plan tabs</div>
+        <div class="seg" id="planTabs">
+          <button class="${activeTab==="A"?"active":""}" data-ptab="A">Plan A</button>
+          <button class="${activeTab==="B"?"active":""}" data-ptab="B">Plan B</button>
+          <button class="${activeTab==="C"?"active":""}" data-ptab="C">Plan C</button>
+        </div>
+      </div>
+
+      <div class="uiGrid2">
+        <div class="uiCard">
+          <div class="uiLabel">Preferred option</div>
+          <div class="seg">
+            ${segButton("None","none",preferred,"pref")}
+            ${segButton("Plan A","A",preferred,"pref")}
+            ${segButton("Plan B","B",preferred,"pref")}
+            ${segButton("Plan C","C",preferred,"pref")}
+          </div>
+          <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:8px;">
+            Selecting a preferred plan sets status to <b>AGREED</b> on save.
+          </div>
+        </div>
+
+        <div class="uiCard">
+          <div class="uiLabel">Actioning</div>
+          <div class="seg">
+            ${segButton("Not actioning","0",actioning?"1":"0","act")}
+            ${segButton("Actioning now","1",actioning?"1":"0","act")}
+          </div>
+          <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:8px;">
+            Actioning sets status to <b>EXECUTING</b> on save.
+          </div>
+        </div>
+      </div>
+
+      <div class="uiCard">
+        <div class="uiLabel">Aim</div>
+        ${mkSeg("aim", p.aim, PLAN.aim)}
+      </div>
+
+      <div class="uiCard">
+        <div class="uiLabel">Approach</div>
+        ${mkSeg("approach", p.approach, PLAN.approach)}
+      </div>
+
+      <div class="uiCard">
+        <div class="uiLabel">Egress route</div>
+        ${mkSeg("egress", p.egress, PLAN.egress)}
+      </div>
+
+      <div class="uiGrid2">
+        <div class="uiCard">
+          <div class="uiLabel">Cadence: Next assessment</div>
+          <div class="seg">
+            ${Object.entries(PLAN.review).map(([v,l])=>segButton("+"+l, v, "", "review")).join("")}
+          </div>
+          <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:8px;">
+            Current: <span style="font-family:var(--mono);">${train.next_review_at ? new Date(train.next_review_at).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}) : "—"}</span>
+          </div>
+        </div>
+        <div class="uiCard">
+          <div class="uiLabel">Location risk overlay</div>
+          <div class="seg">
+            ${segButton("Unknown","unknown",train.location_risk||"unknown","locrisk")}
+            ${segButton("Open line","openline",train.location_risk||"unknown","locrisk")}
+            ${segButton("Tunnel","tunnel",train.location_risk||"unknown","locrisk")}
+            ${segButton("Viaduct","viaduct",train.location_risk||"unknown","locrisk")}
+            ${segButton("Remote","remote",train.location_risk||"unknown","locrisk")}
+          </div>
+        </div>
+      </div>
+
+      <div class="uiCard">
+        <div class="uiLabel">Resources / agencies</div>
+        <div class="toggleList">
+          ${Object.entries(PLAN.resources).map(([id, label])=>mkToggle(id,label)).join("")}
+        </div>
+      </div>
+
+      <div class="uiCard">
+        <div class="uiLabel">Plan notes (short)</div>
+        <textarea class="uiInput" id="planNotes" maxlength="240" placeholder="Key steps, access, constraints, who owns what…">${escapeHtml(p.notes || "")}</textarea>
+      </div>
+    `);
+
+    // tabs
+    document.querySelectorAll("[data-ptab]").forEach(b=>{
+      b.onclick = ()=>{
+        activeTab = b.getAttribute("data-ptab");
+        pd.meta.activeTab = activeTab;
+        renderPlanTab(activeTab);
+      };
+    });
+
+    // seg binds
+    bindSeg("pref", (val)=>{ preferred = val; pd.meta.preferred = preferred; });
+    bindSeg("act", (val)=>{ actioning = (val === "1"); pd.meta.actioning = actioning; });
+    bindSeg("aim", (val)=>{ p.aim = val; });
+    bindSeg("approach", (val)=>{ p.approach = val; });
+    bindSeg("egress", (val)=>{ p.egress = val; });
+    bindSeg("locrisk", (val)=>{ train._draft_locrisk = val; });
+    bindSeg("review", (mins)=>{ train._draft_review = mins; });
+
+    // toggles
+    document.querySelectorAll(".toggleRow[data-res]").forEach(row=>{
+      row.onclick = ()=>{
+        const id = row.getAttribute("data-res");
+        const on = row.getAttribute("data-on") === "1";
+        const next = !on;
+        row.setAttribute("data-on", next ? "1" : "0");
+        if (next) res.add(id); else res.delete(id);
+        p.resources = Array.from(res.values());
+      };
+    });
+
+    // notes change
+    const notesEl = document.getElementById("planNotes");
+    notesEl.addEventListener("input", ()=>{
+      p.notes = clampStr(notesEl.value || "", 240);
+    });
+  };
+
+  renderPlanTab(activeTab);
 
   setModalActions(`
     <button class="btn" id="backToMenuBtn">Back</button>
     <button class="btn primary" id="savePlanBtn">Save</button>
   `);
 
-  bindSeg("plan", (val)=>{ train._draft_plan = val; });
-  bindSeg("locrisk", (val)=>{ train._draft_locrisk = val; });
-  bindSeg("review", (mins)=>{
-    train._draft_review = mins;
-  });
-
   $("backToMenuBtn").onclick = ()=>renderMenuModal(train);
+
   $("savePlanBtn").onclick = async ()=>{
+    // Persist notes for whichever tab is active
+    try{
+      const p = pd[activeTab] || {};
+      const notesEl = document.getElementById("planNotes");
+      if (notesEl) p.notes = clampStr(notesEl.value || "", 240);
+    }catch(e){}
+
+    const status = computePlanStatus();
+
     const patch = {
-      plan_status: train._draft_plan ?? train.plan_status ?? "none",
+      plan_status: status,
       location_risk: train._draft_locrisk ?? train.location_risk ?? "unknown",
+      plan_preferred: (preferred && preferred !== "none") ? preferred : null
     };
+
     if (train._draft_review){
       patch.next_review_at = new Date(Date.now() + Number(train._draft_review)*60000).toISOString();
     }
-    await patchTrain(train.id, patch);
-    toast("Plan updated");
-    renderMenuModal(train);
+
+    // store plan JSON
+    const json = JSON.stringify(pd);
+    patch.plan_data = json;
+
+    // Try full save; if plan_data/plan_preferred cols don't exist, retry without them.
+    const { error } = await sb.from("star_trains").update({ ...patch, updated_at: nowISO(), updated_by_org:(org_context||null) }).eq("id", train.id).eq("incident_key", incident_key);
+    if (error){
+      console.warn("Plan save failed full patch, retrying minimal:", error);
+      const minimal = { plan_status: patch.plan_status, location_risk: patch.location_risk, next_review_at: patch.next_review_at, updated_at: nowISO(), updated_by_org:(org_context||null) };
+      const { error: e2 } = await sb.from("star_trains").update(minimal).eq("id", train.id).eq("incident_key", incident_key);
+      if (e2){
+        console.error(e2);
+        toast("Plan save failed (check RLS / columns)");
+        return;
+      }
+      toast("Saved (DB missing plan_data/plan_preferred). Add columns for full tracking.");
+    } else {
+      toast("Plans saved");
+    }
+
+    await loadAll();
+    computeAndRenderAll();
+    renderMenuModal(trains.find(t=>t.id===train.id) || train);
   };
 }
+
 
 
 function openWelfareModal(train){
@@ -1938,6 +2484,7 @@ function openAddTrainModal(){
       hvac_status: "unknown",
       toilet_status: "unknown",
       power_status: "unknown",
+      risk_matrix: null,
       status: "open",
       created_at: nowISO(),
       updated_at: nowISO(),
@@ -2080,13 +2627,10 @@ function renderTiles(){
     const paxHigh = train.pax_load === "high";
     const hasMap = (train.lat != null && train.lon != null);
     if (hasMap && (!train.location_text || String(train.location_text).trim().toLowerCase() === 'pinned location')) { ensureTrainPlaceLabel(train); }
-
-    const hzSet = readHazards(train);
-
-    const showHVAC = hvacBad || hzSet.has("hz_hvac_extremes");
-    const showToilet = toiletBad || hzSet.has("hz_toilets_unserviceable");
-    const showPower = powerBad || hzSet.has("hz_no_lighting");
-    const showPax = paxHigh || hzSet.has("hz_overcrowding");
+    const showHVAC = hvacBad;
+    const showToilet = toiletBad;
+    const showPower = powerBad;
+    const showPax = paxHigh;
     const showMap = hasMap;
 
     const iconsHtml = [
