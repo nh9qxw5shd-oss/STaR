@@ -1,0 +1,2284 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>STaR V1 – Stranded Train Risk</title>
+
+  <!-- Leaflet (map picker) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+
+  <!-- Supabase JS -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    :root{
+      --bg1:#f6f8fc;
+      --bg2:#eef2f8;
+      --panel: rgba(255,255,255,.86);
+      --panel2: rgba(255,255,255,.72);
+      --stroke: rgba(17,24,39,.12);
+      --stroke2: rgba(17,24,39,.18);
+      --ink: rgba(17,24,39,.92);
+      --muted: rgba(17,24,39,.62);
+      --muted2: rgba(17,24,39,.42);
+      --good:#16a34a;
+      --warn:#f59e0b;
+      --bad:#ef4444;
+      --info:#2563eb;
+      --shadow: 0 18px 50px rgba(17,24,39,.12);
+      --shadow2: 0 10px 30px rgba(17,24,39,.10);
+      --r: 18px;
+      --r2: 14px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+    }
+    *{ box-sizing:border-box; }
+    body{
+      margin:0;
+      font-family: var(--sans);
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 800px at 12% -5%, rgba(37,99,235,.10), transparent 55%),
+        radial-gradient(900px 700px at 85% 10%, rgba(22,163,74,.09), transparent 55%),
+        radial-gradient(900px 700px at 50% 115%, rgba(245,158,11,.08), transparent 55%),
+        linear-gradient(180deg, var(--bg1), var(--bg2));
+      min-height:100vh;
+    }
+
+    header{
+      position:sticky;
+      top:0;
+      z-index:50;
+      backdrop-filter: blur(14px);
+      background: rgba(255,255,255,.72);
+      border-bottom: 1px solid rgba(17,24,39,.10);
+    }
+    .hdrInner{
+      max-width: 1400px;
+      margin:0 auto;
+      padding: 14px 16px;
+      display:flex;
+      gap:12px;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+    .brand{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      margin-right:auto;
+      min-width: 240px;
+    }
+    .brand .logo{
+      width:34px;height:34px;border-radius:12px;
+      background: linear-gradient(135deg, rgba(96,165,250,.95), rgba(34,197,94,.85));
+      box-shadow: 0 10px 26px rgba(0,0,0,.35);
+    }
+    .logoSvg{
+      width:34px;height:34px;
+      filter: drop-shadow(0 10px 26px rgba(0,0,0,.20));
+      border-radius: 12px;
+      flex: 0 0 auto;
+    }
+
+    .brand .name{
+      font-weight: 950;
+      letter-spacing: .3px;
+      font-size: 16px;
+      line-height: 1.1;
+    }
+    .brand .sub{
+      color: var(--muted);
+      font-size: 12px;
+      margin-top:2px;
+    }
+    .chip{
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.08);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 800;
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      user-select:none;
+    }
+    .chip .dot{
+      width:8px;height:8px;border-radius:50%;
+      background: rgba(255,255,255,.40);
+    }
+
+    .hdrCtrl{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+    .btn{
+      height:36px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.08);
+      color: var(--ink);
+      padding: 0 12px;
+      font-size: 13px;
+      font-weight: 900;
+      cursor:pointer;
+      display:inline-flex;
+      align-items:center;
+      gap:10px;
+      box-shadow: 0 8px 22px rgba(0,0,0,.18);
+    }
+    .btn:hover{ background: rgba(255,255,255,.12); }
+    .btn.primary{
+      background: linear-gradient(135deg, rgba(37,99,235,.95), rgba(96,165,250,.85));
+      border-color: rgba(255,255,255,.0);
+    }
+    .btn.primary:hover{ filter: brightness(1.02); }
+    .btn.danger{
+      background: linear-gradient(135deg, rgba(239,68,68,.95), rgba(244,63,94,.85));
+      border-color: rgba(255,255,255,.0);
+    }
+    .btn.icon{
+      width:36px;
+      justify-content:center;
+      padding:0;
+      gap:0;
+    }
+
+    .selectPill{
+      height:36px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.08);
+      color: var(--ink);
+      padding: 0 10px;
+      font-size: 13px;
+      font-weight: 900;
+      outline:none;
+      appearance:none;
+    }
+    .selectPill option{ color:#111; }
+
+    main{
+      max-width: 1400px;
+      margin:0 auto;
+      padding: 16px;
+    }
+
+    .kpis{
+      display:grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .kpi{
+      background: var(--panel2);
+      border: 1px solid rgba(17,24,39,.10);
+      border-radius: 18px;
+      padding: 12px 12px;
+      box-shadow: var(--shadow2);
+      min-height: 78px;
+      display:flex;
+      flex-direction:column;
+      justify-content:space-between;
+    }
+    .kpi .label{ color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing:.2px; }
+    .kpi .value{ font-size: 22px; font-weight: 950; letter-spacing:.2px; }
+    .kpi .sub{ color: var(--muted2); font-size: 12px; }
+
+    .span2{ grid-column: span 2; }
+    .span3{ grid-column: span 3; }
+    .span4{ grid-column: span 4; }
+    .span6{ grid-column: span 6; }
+
+    .toolbar{
+      display:flex;
+      gap: 10px;
+      flex-wrap:wrap;
+      align-items:center;
+      margin-bottom: 12px;
+    }
+    .pill{
+      background: var(--panel2);
+      border: 1px solid rgba(17,24,39,.10);
+      border-radius: 999px;
+      padding: 8px 10px;
+      display:flex;
+      gap: 10px;
+      align-items:center;
+      box-shadow: var(--shadow2);
+    }
+    .pill .mono{ font-family: var(--mono); }
+    .pill input{
+      height: 34px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.62);
+      color: var(--ink);
+      padding: 0 12px;
+      outline:none;
+      font-weight: 800;
+      min-width: 220px;
+    }
+    .pill input::placeholder{ color: rgba(255,255,255,.45); }
+    .pill select{
+      height: 34px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.62);
+      color: var(--ink);
+      padding: 0 10px;
+      outline:none;
+      font-weight: 800;
+      appearance:none;
+    }
+    .pill button{
+      height: 34px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.10);
+      color: var(--ink);
+      padding: 0 12px;
+      cursor:pointer;
+      font-weight: 900;
+    }
+    .pill button:hover{ background: rgba(255,255,255,.14); }
+
+    .grid{
+      display:grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 12px;
+    }
+
+    /* Bougie tile */
+    .tile{
+      --tint1: rgba(96,165,250,.14);
+      --tint2: rgba(34,197,94,.12);
+      grid-column: span 4;
+      border-radius: 22px;
+      background: var(--panel2);
+      border: 1px solid rgba(17,24,39,.10);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+      display:flex;
+      flex-direction:column;
+      min-height: 220px;
+      position:relative;
+    }
+    .tile::before{
+      content:"";
+      position:absolute;
+      inset:0;
+      background:
+        radial-gradient(900px 240px at 10% 0%, var(--tint1), transparent 60%),
+        radial-gradient(700px 220px at 90% 0%, var(--tint2), transparent 60%);
+      pointer-events:none;
+      z-index:0;
+    }
+    .tile.rag-green{ --tint1: rgba(34,197,94,.16); --tint2: rgba(96,165,250,.10); }
+    .tile.rag-amber{ --tint1: rgba(245,158,11,.18); --tint2: rgba(96,165,250,.10); }
+    .tile.rag-red{ --tint1: rgba(239,68,68,.18); --tint2: rgba(245,158,11,.10); }
+
+    @media (max-width: 1150px){ .tile{ grid-column: span 6; } }
+    @media (max-width: 720px){ .tile{ grid-column: span 12; } }
+
+    .tilePad{ padding: 14px; display:flex; flex-direction:column; gap:10px; position:relative; z-index:1; }
+    .tileTop{
+      display:flex;
+      flex-wrap:wrap;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap: 10px;
+    }
+    .tileTitle{
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      min-width:0;
+    }
+    .hc{
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 950;
+      padding: 6px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.62);
+      white-space:nowrap;
+    }
+.hcBig{
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 950;
+  letter-spacing: .8px;
+  text-transform: uppercase;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(17,24,39,.12);
+  background: rgba(255,255,255,.78);
+  box-shadow: 0 10px 26px rgba(17,24,39,.08);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 10px;
+}
+.hcBig .subline{
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--muted);
+  letter-spacing: .2px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  max-width: 55%;
+  text-align:right;
+}
+@media (max-width: 560px){
+  .hcBig{ font-size: 18px; padding: 9px 10px; }
+  .hcBig .subline{ max-width: 45%; }
+}
+
+.tile.closed{
+  opacity: .70;
+  filter: grayscale(.08);
+}
+.tile.closed .timerBig{
+  background: rgba(255,255,255,.55);
+}
+.notesInline{ position:relative; z-index:2; }
+    .metaLine{
+      color: var(--muted);
+      font-size: 12px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      max-width: 520px;
+    }
+    .metaStack{
+      display:flex;
+      flex-direction:column;
+      min-width:0;
+    }
+
+    .timerBig{
+      font-family: var(--mono);
+      font-weight: 950;
+      font-size: 26px;
+      letter-spacing: .4px;
+      padding: 10px 12px;
+      border-radius: 18px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.65);
+      min-width: 140px;
+      text-align:center;
+      box-shadow: 0 10px 26px rgba(17,24,39,.10);
+    }
+    @media (max-width: 560px){
+      .timerBig{ font-size: 22px; min-width: 124px; padding: 9px 10px; }
+      .metaLine{ max-width: 280px; }
+    }
+
+    .badges{
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+    .badge{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.62);
+      font-size: 12px;
+      font-weight: 900;
+      color: var(--ink);
+    }
+    .badge .dot{
+      width:8px;height:8px;border-radius:50%;
+      background: rgba(255,255,255,.35);
+    }
+    .badge.good .dot{ background: var(--good); }
+    .badge.warn .dot{ background: var(--warn); }
+    .badge.bad .dot{ background: var(--bad); }
+    .badge.info .dot{ background: var(--info); }
+
+    .icons{
+      display:flex;
+      gap:8px;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+    .iconFlag{
+      width:34px;height:34px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.62);
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      position:relative;
+      cursor:pointer;
+      user-select:none;
+    }
+    .iconFlag:hover{ background: rgba(255,255,255,.10); }
+    .iconFlag[data-on="1"]{ border-color: rgba(245,158,11,.35); box-shadow: 0 0 0 4px rgba(245,158,11,.10) inset; }
+    .iconFlag.bad[data-on="1"]{ border-color: rgba(239,68,68,.45); box-shadow: 0 0 0 4px rgba(239,68,68,.14) inset; }
+    .iconFlag .tt{
+      position:absolute;
+      bottom: -26px;
+      left: 50%;
+      transform: translateX(-50%);
+      white-space:nowrap;
+      font-size: 11px;
+      background: rgba(0,0,0,.70);
+      color:#fff;
+      padding: 4px 8px;
+      border-radius: 10px;
+      opacity:0;
+      pointer-events:none;
+      transition: .12s;
+    }
+    .iconFlag:hover .tt{ opacity:1; }
+
+    .notesInline{
+      background: rgba(255,255,255,.62);
+      border: 1px solid rgba(17,24,39,.10);
+      border-radius: 18px;
+      padding: 10px 12px;
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+    }
+    .notesInline .head{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .notesInline .list{
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+      max-height: 96px;
+      overflow:auto;
+      padding-right: 4px;
+    }
+    .note{
+      border: 1px solid rgba(17,24,39,.10);
+      border-radius: 14px;
+      background: var(--panel2);
+      padding: 8px 10px;
+    }
+    .note .who{ color: var(--muted); font-size: 11px; font-weight: 900; }
+    .note .txt{ font-size: 13px; margin-top: 2px; white-space: pre-wrap; }
+
+    .tileFooter{
+      position:relative;
+      z-index:1;
+      padding: 12px 14px;
+      border-top: 1px solid rgba(255,255,255,.10);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      background: rgba(255,255,255,.68);
+    }
+    .lastUpd{
+      color: var(--muted2);
+      font-size: 11px;
+      font-weight: 800;
+      white-space:nowrap;
+    }
+
+    .menuBtn{
+  width:38px;height:38px;border-radius: 14px;
+  border: 1px solid rgba(17,24,39,.18);
+  background: rgba(255,255,255,.86);
+  cursor:pointer;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  box-shadow: 0 10px 22px rgba(17,24,39,.10);
+  position:relative;
+}
+.menuBtn:hover{ filter: brightness(0.98); }
+.menuBtn:active{ transform: translateY(1px); }
+    .menuBtn .ico{ width:18px; height:18px; }
+    .menuBtn .ico svg{ width:18px; height:18px; }
+
+
+    /* Generic modal system */
+    .modalOverlay{
+      display:none;
+      position:fixed;
+      inset:0;
+      z-index:200;
+      background: rgba(17,24,39,.40);
+      backdrop-filter: blur(10px);
+      padding: 14px;
+    }
+    .modal{
+      width: min(980px, calc(100vw - 28px));
+      max-height: calc(100vh - 28px);
+      margin: 0 auto;
+      border-radius: 22px;
+      overflow:hidden;
+      background: rgba(255,255,255,.92);
+      border: 1px solid var(--stroke);
+      box-shadow: var(--shadow);
+      display:flex;
+      flex-direction:column;
+    }
+    .modalHdr{
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255,255,255,.10);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      background: rgba(255,255,255,.72);
+    }
+    .modalHdr .ttl{
+      font-weight: 950;
+      font-size: 14px;
+      letter-spacing:.2px;
+    }
+    .modalHdr .sub{
+      margin-top:2px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .modalBody{
+      padding: 14px;
+      overflow:auto;
+      display:flex;
+      flex-direction:column;
+      gap:12px;
+    }
+    .modalActions{
+      padding: 12px 14px;
+      border-top: 1px solid rgba(255,255,255,.10);
+      display:flex;
+      gap:10px;
+      justify-content:flex-end;
+      background: rgba(255,255,255,.72);
+    }
+
+    .uiCard{
+      background: var(--panel2);
+      border: 1px solid rgba(17,24,39,.10);
+      border-radius: 18px;
+      padding: 12px;
+    }
+    .uiGrid2{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 720px){ .uiGrid2{ grid-template-columns: 1fr; } }
+
+    .uiLabel{
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing:.4px;
+      text-transform:uppercase;
+      margin-bottom: 6px;
+    }
+
+    .seg{
+      display:flex;
+      gap: 8px;
+      flex-wrap:wrap;
+    }
+    .seg button{
+      height: 36px;
+      padding: 0 12px;
+      border-radius: 14px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.62);
+      color: var(--ink);
+      cursor:pointer;
+      font-weight: 950;
+      font-size: 13px;
+    }
+    .seg button:hover{ background: rgba(255,255,255,.10); }
+    .seg button.active{
+      background: rgba(96,165,250,.20);
+      border-color: rgba(96,165,250,.35);
+      box-shadow: 0 0 0 4px rgba(96,165,250,.10) inset;
+    }
+
+    .uiInput{
+      width:100%;
+      height: 40px;
+      border-radius: 14px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.68);
+      color: var(--ink);
+      padding: 0 12px;
+      outline:none;
+      font-weight: 850;
+      font-size: 14px;
+    }
+    .uiInput::placeholder{ color: rgba(255,255,255,.42); }
+    textarea.uiInput{
+      height:auto;
+      min-height: 92px;
+      padding: 10px 12px;
+      resize: vertical;
+      font-family: var(--sans);
+      font-weight: 800;
+      line-height: 1.3;
+    }
+
+    
+    /* hazard toggles */
+    .toggleList{ display:flex; flex-direction:column; gap:8px; }
+    .toggleRow{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding: 10px 12px;
+      border-radius: 16px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.70);
+      cursor:pointer;
+      user-select:none;
+    }
+    .toggleRow:hover{ background: rgba(255,255,255,.86); }
+    .toggleRow .left{ display:flex; flex-direction:column; gap:2px; min-width:0; }
+    .toggleRow .name{ font-weight: 950; font-size: 13px; }
+    .toggleRow .desc{ color: var(--muted); font-size: 12px; font-weight: 800; }
+    .togglePill{
+      min-width: 58px;
+      height: 30px;
+      border-radius: 999px;
+      border: 1px solid var(--stroke);
+      background: rgba(17,24,39,.06);
+      display:flex;
+      align-items:center;
+      padding: 0 8px;
+      justify-content:flex-start;
+      position:relative;
+    }
+    .togglePill::after{
+      content:"";
+      width: 18px; height: 18px;
+      border-radius: 999px;
+      background: rgba(17,24,39,.35);
+      box-shadow: 0 6px 14px rgba(17,24,39,.12);
+      transform: translateX(0);
+      transition: .12s;
+    }
+    .toggleRow[data-on="1"] .togglePill{
+      background: rgba(22,163,74,.14);
+      border-color: rgba(22,163,74,.35);
+      justify-content:flex-end;
+    }
+    .toggleRow[data-on="1"] .togglePill::after{
+      background: rgba(22,163,74,.90);
+      transform: translateX(0);
+    }
+.toast{
+      position:fixed;
+      bottom: 16px;
+      right: 16px;
+      background: rgba(0,0,0,.72);
+      color:#fff;
+      border-radius: 16px;
+      padding: 10px 12px;
+      box-shadow: var(--shadow);
+      font-size: 13px;
+      opacity:0;
+      transform: translateY(10px);
+      transition: all .18s ease;
+      pointer-events:none;
+      max-width: 360px;
+      z-index:300;
+      border: 1px solid var(--stroke);
+      backdrop-filter: blur(10px);
+    }
+    .toast.show{ opacity:1; transform: translateY(0); }
+
+    /* Leaflet container inside modal */
+    #map { height: 520px; border-radius: 18px; overflow:hidden; border: 1px solid var(--stroke); }
+    .mapBar{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+    .mapBar .mono{ font-family: var(--mono); font-size: 12px; color: var(--muted); font-weight: 900; }
+
+    /* tiny inline svg icons */
+    .ico{ width:16px; height:16px; display:inline-block; }
+    .ico svg{ width:16px; height:16px; fill: currentColor; opacity:1; }
+  </style>
+</head>
+
+<body>
+<header>
+  <div class="hdrInner">
+    <div class="brand">
+      <svg class="logoSvg" viewBox="0 0 64 64" width="34" height="34" aria-hidden="true">
+        <defs>
+          <linearGradient id="railG" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#3b82f6"/>
+            <stop offset="55%" stop-color="#22c55e"/>
+            <stop offset="100%" stop-color="#06b6d4"/>
+          </linearGradient>
+        </defs>
+        <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#railG)"/>
+        <!-- Simple train + track mark -->
+        <path d="M22 18c0-2.2 1.8-4 4-4h12c2.2 0 4 1.8 4 4v19c0 2.2-1.8 4-4 4H26c-2.2 0-4-1.8-4-4V18Z" fill="rgba(255,255,255,.92)"/>
+        <path d="M26 20h12c1.1 0 2 .9 2 2v6H24v-6c0-1.1.9-2 2-2Z" fill="rgba(17,24,39,.22)"/>
+        <circle cx="28" cy="38" r="2.2" fill="rgba(17,24,39,.55)"/>
+        <circle cx="36" cy="38" r="2.2" fill="rgba(17,24,39,.55)"/>
+        <path d="M20 46h24" stroke="rgba(255,255,255,.92)" stroke-width="3" stroke-linecap="round"/>
+        <path d="M24 50h16" stroke="rgba(255,255,255,.75)" stroke-width="3" stroke-linecap="round"/>
+      </svg>
+      <div>
+        <div class="name">STaR <span class="chip" style="margin-left:8px;"><span class="dot"></span>V1</span></div>
+        <div class="sub">Stranded Train Risk · minimal tiles, everything else in modules</div>
+      </div>
+    </div>
+
+    <div class="hdrCtrl">
+      <select id="orgSelect" class="selectPill" title="Org context (non-blocking)">
+        <option value="">Acting as: Not set</option>
+        <option value="NR">Network Rail</option>
+        <option value="EMR">EMR</option>
+        <option value="GTR">GTR</option>
+        <option value="XC">CrossCountry</option>
+        <option value="LNER">LNER</option>
+        <option value="OTHER">Other</option>
+      </select>
+
+      <button id="copyLinkBtn" class="btn" title="Copy incident link">
+        <span class="ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M16 1H8a2 2 0 0 0-2 2v2h2V3h8v18H8v-2H6v2a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2Zm-6 6H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2Zm0 12H4V9h6v10Z"/></svg>
+        </span>
+        Copy link
+      </button>
+
+      <button id="startIncidentBtn" class="btn" title="Start incident clock">
+        <span class="ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Z"/></svg>
+        </span>
+        Start
+      </button>
+
+      <button id="newTrainBtn" class="btn primary">
+        <span class="ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M11 4h2v16h-2V4Zm-7 7h16v2H4v-2Z"/></svg>
+        </span>
+        Add train
+      </button>
+
+      <button id="closeIncidentBtn" class="btn danger" title="Close incident (wipe trains + notes)">
+        <span class="ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M6 7h12v2H6V7Zm0 4h12v2H6v-2Zm0 4h12v2H6v-2Z"/></svg>
+        </span>
+        Close incident
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- KPI strip -->
+  <section class="kpis" id="kpiStrip">
+    <div class="kpi span3">
+      <div class="label">Incident clock</div>
+      <div class="value" style="font-family:var(--mono);" id="kpiIncidentClock">--:--:--</div>
+      <div class="sub" id="kpiIncidentSince">Not started</div>
+    </div>
+    <div class="kpi span2">
+      <div class="label">Trains tracked</div>
+      <div class="value" id="kpiTotal">0</div>
+      <div class="sub">All tiles</div>
+    </div>
+    <div class="kpi span2">
+      <div class="label">Active</div>
+      <div class="value" id="kpiActive">0</div>
+      <div class="sub">Open / in play</div>
+    </div>
+    <div class="kpi span2">
+      <div class="label">Closed</div>
+      <div class="value" id="kpiClosed">0</div>
+      <div class="sub">Resolved</div>
+    </div>
+    <div class="kpi span3">
+      <div class="label">Risk leaderboard</div>
+      <div class="value" id="kpiTopRisk">–</div>
+      <div class="sub" id="kpiTopRiskSub">No trains</div>
+    </div>
+  </section>
+
+  <!-- Toolbar -->
+  <section class="toolbar">
+    <div class="pill">
+      <span style="color:var(--muted);font-size:12px;font-weight:950;">Incident</span>
+      <span class="mono" id="incidentKeyLabel">…</span>
+    </div>
+
+    <div class="pill">
+      <input id="searchBox" placeholder="Filter tiles (headcode / location / TOC)…" />
+      <select id="filterStatus">
+        <option value="">All</option>
+        <option value="open">Open</option>
+        <option value="closed">Closed</option>
+      </select>
+      <select id="filterRisk">
+        <option value="">Risk</option>
+        <option value="red">Red</option>
+        <option value="amber">Amber</option>
+        <option value="green">Green</option>
+      </select>
+      <button id="clearFiltersBtn">Clear</button>
+    </div>
+  </section>
+
+  <section class="grid" id="tiles"></section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<!-- Universal Modal -->
+<div id="modalOverlay" class="modalOverlay">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modalHdr">
+      <div>
+        <div class="ttl" id="modalTitle">Modal</div>
+        <div class="sub" id="modalSub">—</div>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <button id="modalCloseBtn" class="btn icon" title="Close">
+          <span class="ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4 4.29 19.71 2.88 18.29 9.17 12 2.88 5.71 4.29 4.29l6.3 6.3 6.29-6.3 1.42 1.42Z"/></svg>
+          </span>
+        </button>
+      </div>
+    </div>
+    <div class="modalBody" id="modalBody"></div>
+    <div class="modalActions" id="modalActions"></div>
+  </div>
+</div>
+
+<script>
+/* =========================
+   CONFIG
+========================= */
+const CONFIG = {
+  SUPABASE_URL: "https://ungtmfwxqawkdiflmora.supabase.co",
+  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVuZ3RtZnd4cWF3a2RpZmxtb3JhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxMDY4NjQsImV4cCI6MjA3NzY4Mjg2NH0.Yaq0XfbbkwxJDUoiPCS7bLVBy70Wa-NOOWIxkpRRxdc",
+  THRESHOLDS_MIN: { stranded: 20, amber: 40, red: 60 },
+  WEATHER_ENDPOINT: "https://api.open-meteo.com/v1/forecast"
+};
+
+/* =========================
+   HELPERS
+========================= */
+const $ = (id) => document.getElementById(id);
+const uid = () => Math.random().toString(36).slice(2, 10).toUpperCase();
+const nowISO = () => new Date().toISOString();
+
+function fmtHMS(ms){
+  ms = Math.max(0, ms);
+  const s = Math.floor(ms/1000);
+  const hh = String(Math.floor(s/3600)).padStart(2,'0');
+  const mm = String(Math.floor((s%3600)/60)).padStart(2,'0');
+  const ss = String(s%60).padStart(2,'0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+function minutesBetween(aISO, bISO){
+  const a = new Date(aISO).getTime();
+  const b = new Date(bISO).getTime();
+  return Math.floor((b-a)/60000);
+}
+
+function toast(msg){
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast._tm);
+  toast._tm = setTimeout(()=>t.classList.remove("show"), 2400);
+}
+
+function escapeHtml(s){
+  s = (s ?? "").toString();
+  return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+}
+function escapeAttr(s){ return escapeHtml(s).replace(/"/g,'&quot;'); }
+function clampStr(s, n=180){
+  s = (s||"").trim();
+  if (s.length <= n) return s;
+  return s.slice(0,n-1) + "…";
+}
+function relTime(iso){
+  const ms = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(ms/60000);
+  if (m < 1) return "just now";
+  if (m === 1) return "1 min ago";
+  if (m < 60) return `${m} mins ago`;
+  const h = Math.floor(m/60);
+  return h === 1 ? "1 hr ago" : `${h} hrs ago`;
+}
+
+/* =========================
+   RISK (simple, explainable)
+========================= */
+function riskFromTrain(train){
+  const baseStart = train.stranded_at || train.created_at;
+  const mins = minutesBetween(baseStart, nowISO());
+  let score = 0;
+
+  if (mins >= CONFIG.THRESHOLDS_MIN.stranded) score += 2;
+  if (mins >= CONFIG.THRESHOLDS_MIN.amber) score += 3;
+  if (mins >= CONFIG.THRESHOLDS_MIN.red) score += 5;
+
+  const addIf = (val, w) => { if (val === "failed") score += w; };
+  addIf(train.hvac_status, 2);
+  addIf(train.toilet_status, 2);
+  addIf(train.power_status, 3);
+
+  if (train.pax_load === "high") score += 2;
+  if (train.pax_load === "med") score += 1;
+
+  if (train.location_risk === "tunnel") score += 3;
+  if (train.location_risk === "viaduct") score += 2;
+  if (train.location_risk === "remote") score += 2;
+  if (train.location_risk === "openline") score += 1;
+
+  if (train.plan_status === "agreed") score -= 1;
+  if (train.plan_status === "executing") score -= 2;
+
+  if (score >= 8) return { rag:"red", score };
+  if (score >= 4) return { rag:"amber", score };
+  return { rag:"green", score };
+}
+
+function ragBadgeClass(rag){
+  if (rag === "red") return "bad";
+  if (rag === "amber") return "warn";
+  return "good";
+}
+
+/* =========================
+   STATE + DB
+========================= */
+const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+
+let incident_key = "";
+let org_context = localStorage.getItem("star_org") || "";
+let trains = [];
+let notesByTrain = new Map();
+let incident = null;
+
+let fText = "";
+let fStatus = "";
+let fRisk = "";
+
+let renderTimer = null;
+let incidentTimer = null;
+
+let chTrains = null;
+let chNotes = null;
+
+/* =========================
+   INCIDENT KEY
+========================= */
+function getIncidentKey(){
+  const url = new URL(window.location.href);
+  let k = url.searchParams.get("i");
+  if (!k) {
+    k = uid();
+    url.searchParams.set("i", k);
+    history.replaceState(null, "", url.toString());
+  }
+  return k;
+}
+
+async function ensureIncident(){
+  incident_key = getIncidentKey();
+  $("incidentKeyLabel").textContent = incident_key;
+
+  const { data: existing, error: e1 } = await sb
+    .from("star_incidents")
+    .select("*")
+    .eq("incident_key", incident_key)
+    .maybeSingle();
+
+  if (e1) { console.error(e1); toast("DB error reading incident"); return; }
+
+  if (existing) {
+    incident = existing;
+  } else {
+    const payload = { incident_key, created_at: nowISO(), created_by_org: org_context || null };
+    const { data: created, error: e2 } = await sb
+      .from("star_incidents")
+      .insert(payload)
+      .select("*")
+      .single();
+    if (e2) { console.error(e2); toast("DB error creating incident"); return; }
+    incident = created;
+  }
+
+  
+  // Ensure we have an active session id for this incident link (lets us "wipe" the board without deleting history)
+  if (!incident?.current_session_id) {
+    const newSession = uid();
+    const { data: patched, error: eSess } = await sb
+      .from("star_incidents")
+      .update({ current_session_id: newSession })
+      .eq("incident_key", incident_key)
+      .select("*")
+      .maybeSingle();
+    if (eSess) {
+      console.error(eSess);
+      toast("DB error initialising incident session");
+    } else if (patched) {
+      incident = patched;
+    }
+  }
+startIncidentClock();
+}
+
+function startIncidentClock(){
+  // Clock only runs once the incident has been explicitly started.
+  const startIso = incident?.started_at || null;
+  if (!startIso){
+    $("kpiIncidentClock").textContent = "--:--:--";
+    $("kpiIncidentSince").textContent = "Not started";
+    return;
+  }
+  clearInterval(incidentTimer);
+  incidentTimer = setInterval(()=>{
+    const ms = Date.now() - new Date(startIso).getTime();
+    $("kpiIncidentClock").textContent = fmtHMS(ms);
+    $("kpiIncidentSince").textContent = "Since " + new Date(startIso).toLocaleString();
+  }, 500);
+}
+
+async function ensureIncidentStarted(auto=false){
+  // If already started, just ensure clock is running.
+  if (incident?.started_at){ startIncidentClock(); return true; }
+
+  const when = nowISO();
+  const patch = { started_at: when, started_by_org: (org_context || null) };
+
+  const { data, error } = await sb
+    .from("star_incidents")
+    .update(patch)
+    .eq("incident_key", incident_key)
+    .select("*")
+    .maybeSingle();
+
+  if (error){
+    console.error(error);
+    toast("Start failed (missing started_at column?)");
+    // Keep UI sane even if DB blocks it:
+    incident = incident || {};
+    incident.started_at = when;
+    startIncidentClock();
+    if (!auto){
+      toast("Started locally (DB blocked). Add started_at to star_incidents to sync.");
+    }
+    return true;
+  }
+
+  incident = data || { ...(incident||{}), ...patch };
+  startIncidentClock();
+  toast(auto ? "Incident auto-started" : "Incident started");
+  return true;
+}
+
+/* =========================
+   LOAD
+========================= */
+async function loadAll(){
+  await loadTrains();
+  await loadNotes();
+  computeAndRenderAll();
+}
+async function loadTrains(){
+  const { data, error } = await sb
+    .from("star_trains")
+    .select("*")
+    .eq("incident_key", incident_key)
+    .eq("session_id", incident?.current_session_id || "")
+    .order("created_at", { ascending: false });
+  if (error) { console.error(error); toast("DB error loading trains"); return; }
+  trains = data || [];
+}
+async function loadNotes(){
+  const { data, error } = await sb
+    .from("star_notes")
+    .select("*")
+    .eq("incident_key", incident_key)
+    .eq("session_id", incident?.current_session_id || "")
+    .order("created_at", { ascending: false });
+  if (error) { console.error(error); toast("DB error loading notes"); return; }
+  notesByTrain = new Map();
+  (data || []).forEach(n=>{
+    if (!notesByTrain.has(n.train_id)) notesByTrain.set(n.train_id, []);
+    notesByTrain.get(n.train_id).push(n);
+  });
+}
+
+/* =========================
+   REALTIME
+========================= */
+function subscribeRealtime(){
+  if (chTrains) sb.removeChannel(chTrains);
+  if (chNotes) sb.removeChannel(chNotes);
+
+  chTrains = sb.channel("star_trains_" + incident_key)
+    .on("postgres_changes", { event:"*", schema:"public", table:"star_trains", filter:`incident_key=eq.${incident_key}` }, async ()=>{
+      await loadTrains();
+      computeAndRenderAll();
+    })
+    .subscribe();
+
+  chNotes = sb.channel("star_notes_" + incident_key)
+    .on("postgres_changes", { event:"*", schema:"public", table:"star_notes", filter:`incident_key=eq.${incident_key}` }, async ()=>{
+      await loadNotes();
+      computeAndRenderAll();
+    })
+    .subscribe();
+}
+
+/* =========================
+   PATCH
+========================= */
+async function patchTrain(id, patch){
+  patch.updated_at = nowISO();
+  patch.updated_by_org = org_context || null;
+
+  // Optimistic UI update (so you don't have to refresh like it's 2003)
+  const idx = trains.findIndex(t=>t.id===id);
+  if (idx >= 0){
+    trains[idx] = { ...trains[idx], ...patch };
+    computeAndRenderAll();
+  }
+
+  const { error } = await sb
+    .from("star_trains")
+    .update(patch)
+    .eq("id", id)
+    .eq("incident_key", incident_key);
+
+  if (error) {
+    console.error(error);
+    toast("DB update failed: " + (error.message || error.details || "unknown"));
+    // Reload to reconcile state
+    await loadTrains();
+    computeAndRenderAll();
+  }
+}
+
+async function addNote(train_id, note_text){
+  const payload = {
+    incident_key,
+    session_id: incident?.current_session_id || null,
+    train_id,
+    org_context: org_context || null,
+    note_text,
+    created_at: nowISO()
+  };
+
+  // Optimistic insert (UI updates even if realtime is off)
+  const tmp = { ...payload, id: "tmp_" + uid() };
+  if (!notesByTrain.has(train_id)) notesByTrain.set(train_id, []);
+  notesByTrain.get(train_id).unshift(tmp);
+  computeAndRenderAll();
+
+  const { error } = await sb.from("star_notes").insert(payload);
+  if (error){
+    console.error(error);
+    // Roll back optimistic note
+    notesByTrain.set(train_id, (notesByTrain.get(train_id)||[]).filter(n=>n.id !== tmp.id));
+    computeAndRenderAll();
+    toast("Note failed: " + (error.message || error.details || "check RLS/policies"));
+    return;
+  }
+  toast("Note added");
+}
+
+/* =========================
+   WEATHER
+========================= */
+async function fetchWeather(lat, lon){
+  const url = new URL(CONFIG.WEATHER_ENDPOINT);
+  url.searchParams.set("latitude", lat);
+  url.searchParams.set("longitude", lon);
+  url.searchParams.set("current", "temperature_2m,wind_speed_10m,wind_gusts_10m,precipitation,rain,showers,snowfall");
+  url.searchParams.set("timezone", "Europe/London");
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error("weather fetch failed");
+  const js = await res.json();
+  return js?.current || null;
+}
+function formatWeatherSummary(wx){
+  const t = wx.temperature_2m;
+  const w = wx.wind_speed_10m;
+  const g = wx.wind_gusts_10m;
+  const p = wx.precipitation;
+  return `Temp ${Math.round(t)}°C · Wind ${Math.round(w)} km/h (G${Math.round(g)}) · Precip ${p}`;
+}
+
+/* =========================
+   REVERSE GEOCODE (nearest place)
+   - Uses OSM Nominatim (no key)
+   - Throttled to avoid hammering the service
+========================= */
+const _geocodeInflight = new Set();
+let _geocodeQueue = Promise.resolve();
+
+function reverseGeocode(lat, lon){
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
+  return fetch(url, { headers: { "Accept-Language": "en", "Accept": "application/json" } })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error("nominatim failed")))
+    .then(data => (
+      data?.address?.town ||
+      data?.address?.city ||
+      data?.address?.village ||
+      data?.address?.hamlet ||
+      data?.address?.suburb ||
+      (data?.display_name ? String(data.display_name).split(",")[0] : null) ||
+      null
+    ));
+}
+
+// throttle: one request at a time, with a small delay
+function reverseGeocodeThrottled(lat, lon){
+  _geocodeQueue = _geocodeQueue
+    .catch(()=>{})
+    .then(()=>reverseGeocode(lat, lon))
+    .finally(()=>new Promise(res=>setTimeout(res, 900)));
+  return _geocodeQueue;
+}
+
+async function ensureTrainPlaceLabel(train){
+  if (!train || train.lat == null || train.lon == null) return;
+  const current = (train.location_text || "").trim();
+  // Only auto-fill if blank or generic
+  if (current && current.toLowerCase() !== "pinned location") return;
+  if (_geocodeInflight.has(train.id)) return;
+  _geocodeInflight.add(train.id);
+  try{
+    const place = await reverseGeocodeThrottled(train.lat, train.lon);
+    if (place){
+      await patchTrain(train.id, { location_text: place });
+    }
+  }catch(e){
+    // silent: we can survive without a place label
+    console.warn("Reverse geocode failed", e);
+  }finally{
+    _geocodeInflight.delete(train.id);
+  }
+}
+
+/* =========================
+   FILTERS
+========================= */
+function passesFilters(train){
+  if (fStatus && train.status !== fStatus) return false;
+  if (fRisk){
+    const rag = riskFromTrain(train).rag;
+    if (rag !== fRisk) return false;
+  }
+  if (fText){
+    const blob = `${train.headcode||""} ${train.toc||""} ${train.line||""} ${train.location_text||""}`.toLowerCase();
+    if (!blob.includes(fText.toLowerCase())) return false;
+  }
+  return true;
+}
+
+/* =========================
+   MODALS
+========================= */
+let activeTrain = null;
+
+function showModal(show){
+  $("modalOverlay").style.display = show ? "block" : "none";
+  if (!show) {
+    $("modalBody").innerHTML = "";
+    $("modalActions").innerHTML = "";
+    $("modalTitle").textContent = "Modal";
+    $("modalSub").textContent = "—";
+    activeTrain = null;
+    // Ensure map is not stuck in DOM issues
+    setTimeout(()=>{ try { map?.invalidateSize(); } catch(e){} }, 80);
+  }
+}
+
+function setModalHeader(title, sub){
+  $("modalTitle").textContent = title;
+  $("modalSub").textContent = sub || "—";
+}
+
+function setModalActions(actionsHtml){
+  $("modalActions").innerHTML = actionsHtml || "";
+}
+
+function setModalBody(html){
+  $("modalBody").innerHTML = html || "";
+}
+
+function renderMenuModal(train){
+  activeTrain = train;
+  showModal(true);
+  const risk = riskFromTrain(train);
+  setModalHeader(`Train ${train.headcode} modules`, `Risk ${risk.score} · ${risk.rag.toUpperCase()} · Acting as ${org_context || "Not set"}`);
+
+  const sections = [
+    { key:"core",  name:"Core details",      desc:"Status, TOC, line, location text" },
+    { key:"plan",  name:"Plan & cadence",    desc:"Plan status, next assessment" },
+    { key:"welfare", name:"Welfare & systems", desc:"Pax load, HVAC, toilets, power" },
+    { key:"hazards", name:"Hazards & vulnerable pax", desc:"Tick hazards to drive icons + risk" },
+    { key:"location", name:"Exact location", desc:"Map pin + weather" },
+    { key:"notes", name:"Notes",            desc:"Add note + view more" },
+    { key:"close", name:"Close train",      desc:"Mark train closed" }
+  ];
+
+  const listHtml = sections.map(s=>`
+    <div class="uiCard" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+      <div style="min-width:0;">
+        <div style="font-weight:950;">${escapeHtml(s.name)}</div>
+        <div style="color:var(--muted); font-size:12px; font-weight:800; margin-top:2px;">${escapeHtml(s.desc)}</div>
+      </div>
+      <button class="btn" data-open-section="${s.key}">Open</button>
+    </div>
+  `).join("");
+
+  setModalBody(listHtml);
+  setModalActions(`<button class="btn" id="menuCloseBtn">Done</button>`);
+
+  showModal(true);
+
+  $("menuCloseBtn").onclick = ()=>showModal(false);
+  document.querySelectorAll("[data-open-section]").forEach(b=>{
+    b.onclick = ()=>{
+      const key = b.getAttribute("data-open-section");
+      if (key === "close") return openCloseModal(train);
+      openSectionModal(train, key);
+    };
+  });
+}
+
+function openSectionModal(train, section){
+  activeTrain = train;
+  if (section === "core") return openCoreModal(train);
+  if (section === "plan") return openPlanModal(train);
+  if (section === "welfare") return openWelfareModal(train);
+  if (section === "hazards") return openHazardsModal(train);
+  if (section === "location") return openLocationModal(train);
+  if (section === "notes") return openNotesModal(train);
+}
+
+function segButton(label, val, current, group){
+  const active = (val === (current ?? "")) ? "active" : "";
+  return `<button class="${active}" data-seg="${group}" data-val="${val}">${label}</button>`;
+}
+
+function bindSeg(group, onPick){
+  document.querySelectorAll(`[data-seg="${group}"]`).forEach(btn=>{
+    btn.onclick = ()=>{
+      document.querySelectorAll(`[data-seg="${group}"]`).forEach(b=>b.classList.remove("active"));
+      btn.classList.add("active");
+      onPick(btn.getAttribute("data-val"));
+    };
+  });
+}
+
+function openCoreModal(train){
+  setModalHeader(`Core details · ${train.headcode}`, "Fast edits, no clutter");
+  setModalBody(`
+    <div class="uiGrid2">
+      <div class="uiCard">
+        <div class="uiLabel">Status</div>
+        <div class="seg" id="segStatus">
+          ${segButton("Open","open",train.status,"status")}
+          ${segButton("Closed","closed",train.status,"status")}
+        </div>
+      </div>
+      <div class="uiCard">
+        <div class="uiLabel">TOC</div>
+        <div class="seg" id="segToc">
+          ${["UNKNOWN","EMR","GTR","XC","LNER","OTHER"].map(v=>segButton(v,v,train.toc||"UNKNOWN","toc")).join("")}
+        </div>
+      </div>
+    </div>
+
+    <div class="uiCard">
+      <div class="uiLabel">Line / route</div>
+      <input class="uiInput" id="coreLine" placeholder="e.g., MML Fast / Up Main" value="${escapeAttr(train.line||"")}" />
+    </div>
+
+    <div class="uiCard">
+      <div class="uiLabel">Location text</div>
+      <input class="uiInput" id="coreLoc" placeholder="e.g., Between X and Y / Nottingham West Jn" value="${escapeAttr(train.location_text||"")}" />
+    </div>
+  `);
+
+  setModalActions(`
+    <button class="btn" id="backToMenuBtn">Back</button>
+    <button class="btn primary" id="saveCoreBtn">Save</button>
+  `);
+
+  bindSeg("status", (val)=>{ train._draft_status = val; });
+  bindSeg("toc", (val)=>{ train._draft_toc = val; });
+
+  $("backToMenuBtn").onclick = ()=>renderMenuModal(train);
+  $("saveCoreBtn").onclick = async ()=>{
+    const patch = {
+      status: train._draft_status ?? train.status ?? "open",
+      toc: train._draft_toc ?? train.toc ?? "UNKNOWN",
+      line: ($("coreLine").value||"").trim(),
+      location_text: ($("coreLoc").value||"").trim()
+    };
+    await patchTrain(train.id, patch);
+    toast("Core details saved");
+    renderMenuModal(train);
+  };
+}
+
+function openPlanModal(train){
+  setModalHeader(`Plan & cadence · ${train.headcode}`, "Plan state + next assessment. That's the game.");
+  const reviewIso = train.next_review_at ? new Date(train.next_review_at).toISOString() : new Date(Date.now()+10*60000).toISOString();
+  setModalBody(`
+    <div class="uiCard">
+      <div class="uiLabel">Plan status</div>
+      <div class="seg">
+        ${segButton("None","none",train.plan_status||"none","plan")}
+        ${segButton("Forming","forming",train.plan_status||"none","plan")}
+        ${segButton("Agreed","agreed",train.plan_status||"none","plan")}
+        ${segButton("Executing","executing",train.plan_status||"none","plan")}
+      </div>
+    </div>
+
+    <div class="uiGrid2">
+      <div class="uiCard">
+        <div class="uiLabel">Next assessment</div>
+        <div class="seg">
+          ${segButton("+10 mins","10","", "review")}
+          ${segButton("+20 mins","20","", "review")}
+          ${segButton("+30 mins","30","", "review")}
+          ${segButton("+60 mins","60","", "review")}
+        </div>
+        <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:8px;">
+          Current: <span style="font-family:var(--mono);">${train.next_review_at ? new Date(train.next_review_at).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}) : "—"}</span>
+        </div>
+      </div>
+
+      <div class="uiCard">
+        <div class="uiLabel">Location risk</div>
+        <div class="seg">
+          ${segButton("Unknown","unknown",train.location_risk||"unknown","locrisk")}
+          ${segButton("Open line","openline",train.location_risk||"unknown","locrisk")}
+          ${segButton("Tunnel","tunnel",train.location_risk||"unknown","locrisk")}
+          ${segButton("Viaduct","viaduct",train.location_risk||"unknown","locrisk")}
+          ${segButton("Remote","remote",train.location_risk||"unknown","locrisk")}
+        </div>
+      </div>
+    </div>
+  `);
+
+  setModalActions(`
+    <button class="btn" id="backToMenuBtn">Back</button>
+    <button class="btn primary" id="savePlanBtn">Save</button>
+  `);
+
+  bindSeg("plan", (val)=>{ train._draft_plan = val; });
+  bindSeg("locrisk", (val)=>{ train._draft_locrisk = val; });
+  bindSeg("review", (mins)=>{
+    train._draft_review = mins;
+  });
+
+  $("backToMenuBtn").onclick = ()=>renderMenuModal(train);
+  $("savePlanBtn").onclick = async ()=>{
+    const patch = {
+      plan_status: train._draft_plan ?? train.plan_status ?? "none",
+      location_risk: train._draft_locrisk ?? train.location_risk ?? "unknown",
+    };
+    if (train._draft_review){
+      patch.next_review_at = new Date(Date.now() + Number(train._draft_review)*60000).toISOString();
+    }
+    await patchTrain(train.id, patch);
+    toast("Plan updated");
+    renderMenuModal(train);
+  };
+}
+
+
+function openWelfareModal(train){
+  showModal(true);
+  setModalHeader(`Welfare & systems · ${train.headcode}`, "Passenger load + key systems. Hazards live in their own module.");
+
+  setModalBody(`
+    <div class="uiGrid2">
+      <div class="uiCard">
+        <div class="uiLabel">Passenger load</div>
+        <div class="seg">
+          ${segButton("Unknown","unknown",train.pax_load||"unknown","pax")}
+          ${segButton("Low","low",train.pax_load||"unknown","pax")}
+          ${segButton("Med","med",train.pax_load||"unknown","pax")}
+          ${segButton("High","high",train.pax_load||"unknown","pax")}
+        </div>
+      </div>
+      <div class="uiCard">
+        <div class="uiLabel">HVAC</div>
+        <div class="seg">
+          ${segButton("Unknown","unknown",train.hvac_status||"unknown","hvac")}
+          ${segButton("OK","ok",train.hvac_status||"unknown","hvac")}
+          ${segButton("Failed","failed",train.hvac_status||"unknown","hvac")}
+        </div>
+      </div>
+      <div class="uiCard">
+        <div class="uiLabel">Toilets</div>
+        <div class="seg">
+          ${segButton("Unknown","unknown",train.toilet_status||"unknown","toilet")}
+          ${segButton("OK","ok",train.toilet_status||"unknown","toilet")}
+          ${segButton("Failed","failed",train.toilet_status||"unknown","toilet")}
+        </div>
+      </div>
+      <div class="uiCard">
+        <div class="uiLabel">Power / lighting</div>
+        <div class="seg">
+          ${segButton("Unknown","unknown",train.power_status||"unknown","power")}
+          ${segButton("OK","ok",train.power_status||"unknown","power")}
+          ${segButton("Failed","failed",train.power_status||"unknown","power")}
+        </div>
+      </div>
+    </div>
+  `);
+
+  setModalActions(`
+    <button class="btn" id="backToMenuBtn">Back</button>
+    <button class="btn primary" id="saveWelfareBtn">Save</button>
+  `);
+
+  bindSeg("pax", (val)=>{ train._draft_pax = val; });
+  bindSeg("hvac", (val)=>{ train._draft_hvac = val; });
+  bindSeg("toilet", (val)=>{ train._draft_toilet = val; });
+  bindSeg("power", (val)=>{ train._draft_power = val; });
+
+  $("backToMenuBtn").onclick = ()=>renderMenuModal(train);
+  $("saveWelfareBtn").onclick = async ()=>{
+    const patch = {
+      pax_load: train._draft_pax ?? train.pax_load ?? "unknown",
+      hvac_status: train._draft_hvac ?? train.hvac_status ?? "unknown",
+      toilet_status: train._draft_toilet ?? train.toilet_status ?? "unknown",
+      power_status: train._draft_power ?? train.power_status ?? "unknown",
+    };
+    await patchTrain(train.id, patch);
+    toast("Welfare updated");
+    renderMenuModal(train);
+  };
+}
+
+/* =========================
+   HAZARDS (ticklist)
+========================= */
+const HAZARD_CATALOG = [
+  { group:"Vulnerable passengers", items:[
+    { id:"vp_pregnant", name:"Pregnant", desc:"Known pregnant passengers on board" },
+    { id:"vp_elderly", name:"Elderly", desc:"Elderly passengers present" },
+    { id:"vp_disabled", name:"Disabled / mobility impaired", desc:"Wheelchairs / limited mobility" },
+    { id:"vp_sensory", name:"Visually or hearing impaired", desc:"Requires adjusted comms" },
+    { id:"vp_medical", name:"Medical conditions", desc:"Diabetes, asthma, etc." },
+    { id:"vp_timecritical_meds", name:"Time-critical medication", desc:"Needs meds soon" },
+    { id:"vp_mental_health", name:"Mental health needs", desc:"Anxiety, PTSD etc." },
+    { id:"vp_learning", name:"Learning disabilities / autism", desc:"Needs additional support" },
+    { id:"vp_unaccompanied_children", name:"Unaccompanied children", desc:"Safeguarding risk" },
+    { id:"vp_carers", name:"Passengers with carers", desc:"Carer support required" },
+    { id:"vp_non_english", name:"Non-English speakers", desc:"Comms barrier" },
+    { id:"vp_sensory_sensitive", name:"Sensory-sensitive individuals", desc:"Noise/light sensitivity" },
+  ]},
+  { group:"Internal hazards", items:[
+    { id:"hz_disorder", name:"Disorder", desc:"Anti-social behaviour / disruption" },
+    { id:"hz_self_evac", name:"Self-evacuation", desc:"Pax leaving train without instruction" },
+    { id:"hz_intoxicated", name:"Intoxicated passengers", desc:"Alcohol/drugs affecting behaviour" },
+    { id:"hz_fire_smoke", name:"Fire or smoke", desc:"Immediate life risk" },
+    { id:"hz_medical_emergency", name:"Medical emergency", desc:"Onboard casualty" },
+    { id:"hz_panic", name:"Passenger panic / group distress", desc:"Rapid escalation risk" },
+    { id:"hz_overcrowding", name:"Overcrowding", desc:"Standing load / crush risk" },
+    { id:"hz_toilets_unserviceable", name:"Unserviceable toilets", desc:"Welfare degradation" },
+    { id:"hz_no_lighting", name:"No lighting", desc:"Trip risk / fear factor" },
+    { id:"hz_hvac_extremes", name:"HVAC failure / extreme temps", desc:"Heat/cold stress" },
+    { id:"hz_obstructed", name:"Obstructed gangways/doors", desc:"Egress impeded" },
+    { id:"hz_no_pa", name:"Loss of PA / communications", desc:"Inability to reassure/instruct" },
+    { id:"hz_vandalism", name:"Vandalism / interior damage", desc:"Broken windows/doors etc." },
+    { id:"hz_alarm_noise", name:"Noise or alarm activation", desc:"Distress driver" },
+  ]},
+  { group:"External hazards", items:[
+    { id:"hz_ohle", name:"OHLE present", desc:"Overhead line equipment risk" },
+    { id:"hz_third_rail", name:"Live third rail present", desc:"Third rail risk" },
+    { id:"hz_trip_uneven", name:"Trip hazards / uneven ground", desc:"Ballast/uneven surface" },
+    { id:"hz_flood_risk", name:"Flood risk", desc:"Water present / forecast" },
+    { id:"hz_steep_slope", name:"Steep embankment / slope", desc:"Fall risk" },
+    { id:"hz_limited_walk", name:"Limited safe walking route", desc:"Narrow cess / hazards" },
+    { id:"hz_parallel_lines", name:"Parallel running lines", desc:"Adjacent line risk" },
+    { id:"hz_tunnels_bridges", name:"Tunnels or bridges nearby", desc:"Constrained environment" },
+    { id:"hz_darkness", name:"Darkness / poor visibility", desc:"Night, fog, no lighting" },
+    { id:"hz_adverse_weather", name:"Adverse weather", desc:"Wind/snow/heat impacts" },
+    { id:"hz_level_crossing", name:"Proximity to level crossing", desc:"Public interface risk" },
+    { id:"hz_animals", name:"Animal hazards", desc:"Livestock/wildlife nearby" },
+    { id:"hz_spills", name:"Contaminated ground / spills", desc:"Diesel/chemicals" },
+    { id:"hz_limited_rrv", name:"Limited space for RRV/rescue", desc:"Access constraints" },
+    { id:"hz_slip_risk", name:"Slip risk", desc:"Ice/wet leaves/oil" },
+  ]},
+];
+
+function readHazards(train){
+  const raw = train.hazards;
+  if (!raw) return new Set();
+  if (Array.isArray(raw)) return new Set(raw);
+  if (typeof raw === "string"){
+    try{ const a = JSON.parse(raw); if (Array.isArray(a)) return new Set(a); }catch(e){}
+    // fallback: comma list
+    return new Set(raw.split(",").map(s=>s.trim()).filter(Boolean));
+  }
+  return new Set();
+}
+
+function openHazardsModal(train){
+  showModal(true);
+  setModalHeader(`Hazards · ${train.headcode}`, "Tick hazards. Icons + risk can reflect it.");
+  const set = readHazards(train);
+
+  const htmlBlocks = HAZARD_CATALOG.map(g=>{
+    const rows = g.items.map(it=>{
+      const on = set.has(it.id) ? "1" : "0";
+      return `
+        <div class="toggleRow" data-hz="${it.id}" data-on="${on}">
+          <div class="left">
+            <div class="name">${escapeHtml(it.name)}</div>
+            <div class="desc">${escapeHtml(it.desc)}</div>
+          </div>
+          <div class="togglePill" aria-hidden="true"></div>
+        </div>
+      `;
+    }).join("");
+    return `
+      <div class="uiCard">
+        <div class="uiLabel">${escapeHtml(g.group)}</div>
+        <div class="toggleList">${rows}</div>
+      </div>
+    `;
+  }).join("");
+
+  setModalBody(htmlBlocks);
+
+  setModalActions(`
+    <button class="btn" id="backToMenuBtn">Back</button>
+    <button class="btn primary" id="saveHazBtn">Save</button>
+  `);
+
+  // toggle behaviour
+  document.querySelectorAll(".toggleRow[data-hz]").forEach(row=>{
+    row.onclick = ()=>{
+      const id = row.getAttribute("data-hz");
+      const on = row.getAttribute("data-on") === "1";
+      const next = !on;
+      row.setAttribute("data-on", next ? "1" : "0");
+      if (next) set.add(id); else set.delete(id);
+    };
+  });
+
+  $("backToMenuBtn").onclick = ()=>renderMenuModal(train);
+  $("saveHazBtn").onclick = async ()=>{
+    const arr = Array.from(set.values());
+    // Also sync a few system-derived hazards for convenience
+    if (train.toilet_status === "failed") { if (!set.has("hz_toilets_unserviceable")) arr.push("hz_toilets_unserviceable"); }
+    if (train.hvac_status === "failed") { if (!set.has("hz_hvac_extremes")) arr.push("hz_hvac_extremes"); }
+    if (train.power_status === "failed") { if (!set.has("hz_no_lighting")) arr.push("hz_no_lighting"); }
+    await patchTrain(train.id, { hazards: Array.from(new Set(arr)) });
+    toast("Hazards saved");
+    renderMenuModal(train);
+  };
+}
+
+/* =========================
+   MAP (inside modal section)
+========================= */
+let map = null;
+let mapMarker = null;
+let mapSelectedLatLon = null;
+
+function ensureMap(lat, lon, zoom){
+  const startLat = lat ?? 52.9548;
+  const startLon = lon ?? -1.1581;
+  mapSelectedLatLon = { lat: startLat, lon: startLon };
+
+  setTimeout(()=>{
+    if (!map){
+      map = L.map("map", { zoomControl:true }).setView([startLat, startLon], zoom ?? 7);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors"
+      }).addTo(map);
+
+      map.on("click", (e)=> setMarker(e.latlng.lat, e.latlng.lng, true));
+    } else {
+      map.setView([startLat, startLon], zoom ?? 7);
+    }
+    setMarker(startLat, startLon, false);
+    setTimeout(()=>{ try{ map.invalidateSize(); }catch(e){} }, 120);
+  }, 30);
+}
+
+function setMarker(lat, lon, fromUser){
+  mapSelectedLatLon = { lat, lon };
+  const coordsEl = document.getElementById("mapCoords");
+  if (coordsEl) coordsEl.textContent = `Lat: ${lat.toFixed(5)} | Lon: ${lon.toFixed(5)}`;
+
+  if (!mapMarker){
+    mapMarker = L.marker([lat, lon], { draggable:true }).addTo(map);
+    mapMarker.on("dragend", ()=>{
+      const p = mapMarker.getLatLng();
+      setMarker(p.lat, p.lng, false);
+    });
+  } else {
+    mapMarker.setLatLng([lat, lon]);
+  }
+  if (fromUser) map.panTo([lat, lon]);
+}
+
+function openLocationModal(train){
+  setModalHeader(`Exact location · ${train.headcode}`, "Pin the train. Weather updates automatically.");
+  const hasCoords = (train.lat != null && train.lon != null);
+  const wx = train.weather_summary ? train.weather_summary : "No weather yet";
+
+  setModalBody(`
+    <div class="uiCard">
+      <div class="mapBar">
+        <div class="chip"><span class="dot" style="background:rgba(96,165,250,.9)"></span> Map pin</div>
+        <div class="chip"><span class="dot" style="background:rgba(34,197,94,.9)"></span> Weather</div>
+        <div class="chip" style="font-family:var(--mono);" id="mapCoords">Lat: — | Lon: —</div>
+      </div>
+      <div style="margin-top:10px;" id="map"></div>
+      <div style="margin-top:10px; color:var(--muted); font-size:12px; font-weight:900;">Current weather: ${escapeHtml(wx)}</div>
+    </div>
+  `);
+
+  setModalActions(`
+    <button class="btn" id="backToMenuBtn">Back</button>
+    <button class="btn" id="useMyLocBtn">Use my location</button>
+    <button class="btn primary" id="saveLocBtn">Save</button>
+  `);
+
+  $("backToMenuBtn").onclick = ()=>renderMenuModal(train);
+
+  $("useMyLocBtn").onclick = ()=>{
+    if (!navigator.geolocation) { toast("Geolocation not available"); return; }
+    navigator.geolocation.getCurrentPosition((pos)=>{
+      setMarker(pos.coords.latitude, pos.coords.longitude, true);
+      try{ map.setZoom(15); }catch(e){}
+    }, ()=> toast("Location permission denied"), { enableHighAccuracy:true, timeout:8000 });
+  };
+
+  $("saveLocBtn").onclick = async ()=>{
+    try{
+      const { lat, lon } = mapSelectedLatLon || {};
+      if (lat == null || lon == null) { toast("Pick a location on the map"); return; }
+      const wxObj = await fetchWeather(lat, lon);
+      const summary = wxObj ? formatWeatherSummary(wxObj) : null;
+      // Auto-label nearest place name from pinned coords unless user already typed something meaningful
+      let locText = (train.location_text || "").trim();
+      if (!locText || locText.toLowerCase() === "pinned location"){
+        try{
+          const place = await reverseGeocodeThrottled(lat, lon);
+          if (place) locText = place;
+        }catch(e){ /* ignore */ }
+      }
+      if (!locText) locText = "Pinned location";
+      await patchTrain(train.id, { lat, lon, weather_summary: summary, location_text: locText });
+      toast("Location + weather saved");
+      renderMenuModal(train);
+    } catch(e){
+      console.error(e);
+      toast("Save failed");
+    }
+  };
+
+  ensureMap(train.lat, train.lon, hasCoords ? 15 : 7);
+}
+
+function openNotesModal(train){
+  showModal(true);
+  setModalHeader(`Notes · ${train.headcode}`, "Short, timestamped, attributed. Not a group chat.");
+  const notes = (notesByTrain.get(train.id) || []);
+  setModalBody(`
+    <div class="uiCard">
+      <div class="uiLabel">Add note (max 180)</div>
+      <textarea class="uiInput" id="noteText" maxlength="180" placeholder="e.g., EMR: Awaiting signaller route. Crew updated.">${""}</textarea>
+      <div style="display:flex; gap:10px; align-items:center; margin-top:10px; justify-content:space-between;">
+        <div style="color:var(--muted); font-size:12px; font-weight:900;">Tagged as: <span style="font-family:var(--mono);">${escapeHtml(org_context || "Not set")}</span></div>
+        <button class="btn primary" id="addNoteBtn">Add note</button>
+      </div>
+    </div>
+
+    <div class="uiCard">
+      <div class="uiLabel">Recent notes</div>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        ${notes.slice(0,30).map(n=>`
+          <div class="note">
+            <div class="who">${escapeHtml(n.org_context || "—")} | ${new Date(n.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+            <div class="txt">${escapeHtml(n.note_text || "")}</div>
+          </div>
+        `).join("") || `<div style="color:var(--muted); font-weight:900;">No notes yet.</div>`}
+      </div>
+    </div>
+  `);
+
+  setModalActions(`
+    <button class="btn" id="backToMenuBtn">Back</button>
+    <button class="btn" id="doneNotesBtn">Done</button>
+  `);
+
+  $("backToMenuBtn").onclick = ()=>renderMenuModal(train);
+  $("doneNotesBtn").onclick = ()=>showModal(false);
+  $("addNoteBtn").onclick = async ()=>{
+    const text = clampStr(($("noteText").value||""), 180);
+    if (!text) return;
+    $("noteText").value = "";
+    await addNote(train.id, text);
+  };
+}
+
+function openCloseModal(train){
+  setModalHeader(`Close train · ${train.headcode}`, "This marks the tile closed. Nothing is deleted.");
+  setModalBody(`
+    <div class="uiCard">
+      <div style="font-weight:950;">Close this train?</div>
+      <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:6px;">
+        It will move out of Active counts and stop shouting at you.
+      </div>
+    </div>
+  `);
+  setModalActions(`
+    <button class="btn" id="backToMenuBtn">Back</button>
+    <button class="btn danger" id="confirmCloseBtn">Close train</button>
+  `);
+  $("backToMenuBtn").onclick = ()=>renderMenuModal(train);
+  $("confirmCloseBtn").onclick = async ()=>{
+    await patchTrain(train.id, { status:"closed" });
+    toast("Train closed");
+    showModal(false);
+  };
+}
+
+/* =========================
+   ADD TRAIN (modal)
+========================= */
+function openAddTrainModal(){
+  setModalHeader("Add train", "Fast capture. No prompts. No browser popups.");
+  setModalBody(`
+    <div class="uiCard">
+      <div class="uiLabel">Headcode / UID</div>
+      <input class="uiInput" id="newHeadcode" placeholder="e.g., 1A23" />
+      <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:8px;">
+        Timer starts immediately. You can update details via the tile menu.
+      </div>
+    </div>
+
+    <div class="uiCard">
+      <div class="uiLabel">TOC (optional)</div>
+      <div class="seg">
+        ${["UNKNOWN","EMR","GTR","XC","LNER","OTHER"].map(v=>segButton(v,v,"UNKNOWN","newtoc")).join("")}
+      </div>
+    </div>
+  `);
+  setModalActions(`
+    <button class="btn" id="cancelAddBtn">Cancel</button>
+    <button class="btn primary" id="confirmAddBtn">Add</button>
+  `);
+  showModal(true);
+
+  let newToc = "UNKNOWN";
+  bindSeg("newtoc", (val)=>{ newToc = val; });
+
+  $("cancelAddBtn").onclick = ()=>showModal(false);
+  $("confirmAddBtn").onclick = async ()=>{
+    const headcode = ($("newHeadcode").value||"").trim().toUpperCase();
+    // Auto-start incident if someone goes to add a train
+    await ensureIncidentStarted(true);
+    if (!headcode) { toast("Enter a headcode"); return; }
+    const payload = {
+      incident_key,
+      session_id: incident?.current_session_id || null,
+      headcode,
+      toc: newToc,
+      line: "",
+      location_text: "",
+      location_risk: "unknown",
+      stranded_at: nowISO(),
+      plan_status: "none",
+      next_review_at: new Date(Date.now() + 10*60000).toISOString(),
+      pax_load: "unknown",
+      hvac_status: "unknown",
+      toilet_status: "unknown",
+      power_status: "unknown",
+      status: "open",
+      created_at: nowISO(),
+      updated_at: nowISO(),
+      updated_by_org: org_context || null
+    };
+    const { error } = await sb.from("star_trains").insert(payload);
+    if (error){ console.error(error); toast("DB error adding train"); return; }
+    toast("Train added");
+    showModal(false);
+    await loadAll();
+    computeAndRenderAll();
+  };
+}
+
+/* =========================
+   INCIDENT CLOSE (soft)
+========================= */
+async function closeIncidentHard(){
+  if (!confirm("Close incident? This will clear the board and archive the current session for future callback/review.")) return;
+
+  try{
+    const oldSession = incident?.current_session_id || null;
+    const archivedAt = nowISO();
+
+    // Archive notes for the current session (no delete)
+    if (oldSession){
+      const { error: eN } = await sb
+        .from("star_notes")
+        .update({ archived_at: archivedAt })
+        .eq("incident_key", incident_key)
+        .eq("session_id", oldSession)
+        .is("archived_at", null);
+      if (eN){ console.error(eN); toast("Close failed (notes): " + (eN.message||"")); return; }
+
+      // Archive trains for the current session (no delete)
+      const { error: eT } = await sb
+        .from("star_trains")
+        .update({ archived_at: archivedAt, status: "closed", updated_at: archivedAt, updated_by_org: (org_context||null) })
+        .eq("incident_key", incident_key)
+        .eq("session_id", oldSession)
+        .is("archived_at", null);
+      if (eT){ console.error(eT); toast("Close failed (trains): " + (eT.message||"")); return; }
+    }
+
+    // Rotate to a brand-new empty session for this incident link
+    const newSession = uid();
+    const patch = {
+      closed_at: archivedAt,
+      closed_by_org: (org_context || null),
+      started_at: null,
+      started_by_org: null,
+      current_session_id: newSession
+    };
+
+    const { data: patchedIncident, error: eI } = await sb
+      .from("star_incidents")
+      .update(patch)
+      .eq("incident_key", incident_key)
+      .select("*")
+      .maybeSingle();
+
+    if (eI){ console.error(eI); toast("Close failed (incident): " + (eI.message||"")); return; }
+
+    if (patchedIncident) incident = patchedIncident;
+
+    // Local wipe (board view only)
+    trains = [];
+    notesByTrain = new Map();
+    computeAndRenderAll();
+    toast("Incident closed. Board cleared.");
+
+  } catch (e){
+    console.error(e);
+    toast("Close failed: " + (e?.message || "unknown"));
+  }
+}
+
+
+/* =========================
+   RENDER
+========================= */
+function computeAndRenderAll(){
+  const total = trains.length;
+  const active = trains.filter(t=>t.status==="open").length;
+  const closed = total - active;
+
+  $("kpiTotal").textContent = total;
+  $("kpiActive").textContent = active;
+  $("kpiClosed").textContent = closed;
+
+  const scored = trains
+    .filter(t=>t.status==="open")
+    .map(t=>({ t, r: riskFromTrain(t) }))
+    .sort((a,b)=>b.r.score - a.r.score);
+
+  if (scored.length){
+    $("kpiTopRisk").textContent = scored[0].t.headcode;
+    const top3 = scored.slice(0,3).map(x=>`${x.t.headcode} (${x.r.score})`).join(" · ");
+    $("kpiTopRiskSub").textContent = top3;
+  } else {
+    $("kpiTopRisk").textContent = "–";
+    $("kpiTopRiskSub").textContent = "No active trains";
+  }
+
+  renderTiles();
+
+  if (!renderTimer){
+    renderTimer = setInterval(renderTimersOnly, 500);
+  }
+}
+
+function renderTiles(){
+  const host = $("tiles");
+  host.innerHTML = "";
+
+  const list = trains.filter(passesFilters);
+
+  if (!list.length){
+    host.innerHTML = `<div class="kpi span12" style="grid-column: span 12;">
+      <div class="label">Nothing to show</div>
+      <div class="value">No trains match your filters.</div>
+      <div class="sub">Clear filters or add a train.</div>
+    </div>`;
+    return;
+  }
+
+  list.forEach(train=>{
+    const risk = riskFromTrain(train);
+    const baseStart = train.stranded_at || train.created_at;
+    const endMs = (train.status === "closed" && train.updated_at) ? new Date(train.updated_at).getTime() : Date.now();
+    const ms = endMs - new Date(baseStart).getTime();
+    const timer = fmtHMS(ms);
+    const last = train.updated_at ? `${train.updated_by_org || "—"} · ${relTime(train.updated_at)}` : "—";
+    const notes = notesByTrain.get(train.id) || [];
+
+    // compact flags
+    const hvacBad = train.hvac_status === "failed";
+    const toiletBad = train.toilet_status === "failed";
+    const powerBad = train.power_status === "failed";
+    const paxHigh = train.pax_load === "high";
+    const hasMap = (train.lat != null && train.lon != null);
+    if (hasMap && (!train.location_text || String(train.location_text).trim().toLowerCase() === 'pinned location')) { ensureTrainPlaceLabel(train); }
+
+    const hzSet = readHazards(train);
+
+    const showHVAC = hvacBad || hzSet.has("hz_hvac_extremes");
+    const showToilet = toiletBad || hzSet.has("hz_toilets_unserviceable");
+    const showPower = powerBad || hzSet.has("hz_no_lighting");
+    const showPax = paxHigh || hzSet.has("hz_overcrowding");
+    const showMap = hasMap;
+
+    const iconsHtml = [
+      showHVAC ? `<div class="iconFlag bad" title="HVAC failed">
+            <span class="ico"><svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7Zm0 9.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Z"/></svg></span>
+            <span class="tt">HVAC failed</span>
+          </div>` : ``,
+      showToilet ? `<div class="iconFlag bad" title="Toilets failed">
+            <span class="ico"><svg viewBox="0 0 24 24"><path d="M7 2h10v6h2v2h-1l-1 12H8L7 10H6V8h2V2Zm2 2v4h6V4H9Z"/></svg></span>
+            <span class="tt">Toilets failed</span>
+          </div>` : ``,
+      showPower ? `<div class="iconFlag bad" title="Power/lighting failed">
+            <span class="ico"><svg viewBox="0 0 24 24"><path d="M11 21h-1l1-7H7l6-13h1l-1 7h4l-6 13Z"/></svg></span>
+            <span class="tt">Power failed</span>
+          </div>` : ``,
+      showPax ? `<div class="iconFlag" title="High passenger load">
+            <span class="ico"><svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3Zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3Zm0 2c-2.33 0-7 1.17-7 3.5V21h14v-4.5C15 14.17 10.33 13 8 13Zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V21h7v-4.5C24 14.17 19.33 13 16 13Z"/></svg></span>
+            <span class="tt">High passenger load</span>
+          </div>` : ``,
+      showMap ? `<div class="iconFlag" title="Pinned location">
+            <span class="ico"><svg viewBox="0 0 24 24"><path d="M15 5 9 3 3 5v16l6-2 6 2 6-2V3l-6 2Zm0 14-6-2V5l6 2v12Z"/></svg></span>
+            <span class="tt">Pinned location</span>
+          </div>` : ``,
+    ].filter(Boolean).join("");
+
+    const planLabel = (train.plan_status || "none").toUpperCase();
+    const planBadge = (train.plan_status === "agreed" || train.plan_status === "executing") ? "info" : "warn";
+    const ragCls = ragBadgeClass(risk.rag);
+
+    const tile = document.createElement("div");
+    tile.className = "tile rag-" + risk.rag + (train.status === "closed" ? " closed" : "");
+    tile.dataset.startIso = baseStart;
+    tile.dataset.status = train.status || "open";
+    if (train.status === "closed") tile.dataset.frozen = timer;
+
+    tile.innerHTML = `
+      <div class="tilePad">
+        <div class="hcBig">
+          <span>${escapeHtml(train.headcode || "—")}</span>
+          <span class="subline">${escapeHtml(train.toc || "UNKNOWN")} · ${escapeHtml(train.location_text || "Location not set")}</span>
+        </div>
+
+        <div class="tileTop">
+          <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+            <span class="badge ${ragCls}">
+              <span class="dot"></span>
+              ${risk.rag.toUpperCase()} · ${risk.score}
+            </span>
+            <span class="badge ${planBadge}">
+              <span class="dot"></span>
+              PLAN ${escapeHtml(planLabel)}
+            </span>
+          </div>
+
+          <div style="display:flex; gap:10px; align-items:flex-start;">
+            <div class="timerBig" data-timer="1">${timer}</div>
+            <button class="menuBtn" title="Open modules" data-menu="1">
+              <span class="ico" aria-hidden="true" style="color:var(--ink);">
+                <svg viewBox="0 0 24 24"><path d="M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm7 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2ZM5 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></svg>
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div class="badges">
+          ${train.next_review_at ? `<span class="badge warn"><span class="dot"></span> Next assess ${new Date(train.next_review_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>` : ""}
+          ${train.weather_summary ? `<span class="badge"><span class="dot" style="background:rgba(255,255,255,.40)"></span> ${escapeHtml(train.weather_summary)}</span>` : `<span class="badge"><span class="dot" style="background:rgba(255,255,255,.22)"></span> Weather not set</span>`}
+          ${hasMap ? `<span class="badge"><span class="dot" style="background:rgba(34,197,94,.9)"></span> Pinned</span>` : `<span class="badge"><span class="dot" style="background:rgba(245,158,11,.85)"></span> No pin</span>`}
+        </div>
+
+        <div class="icons">
+          ${iconsHtml || `<span style="color:var(--muted); font-size:12px; font-weight:900;">No active flags</span>`}
+        </div>
+
+        <div class="notesInline">
+          <div class="head">
+            <span>Notes</span>
+            <span>Tagged: <span style="font-family:var(--mono);">${escapeHtml(org_context || "Not set")}</span></span>
+          </div>
+          <div class="list">
+            ${(notes.slice(0,3)).map(n=>`
+              <div class="note">
+                <div class="who">${escapeHtml(n.org_context || "—")} | ${new Date(n.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                <div class="txt">${escapeHtml(n.note_text || "")}</div>
+              </div>
+            `).join("") || `<div style="color:var(--muted); font-weight:900;">No notes yet.</div>`}
+          </div>
+          <div style="display:flex; justify-content:flex-end;">
+            <button class="btn primary" data-open-notes="1">Add / view notes</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="tileFooter">
+        <div class="lastUpd">Last: ${escapeHtml(last)}</div>
+        ${(train.status==="closed") ? `
+        <div style="display:flex; gap:10px; align-items:center;">
+          <span class="badge bad"><span class="dot"></span> CLOSED</span>
+        </div>` : ``}
+      </div>
+    `;
+
+    // menu
+    tile.querySelector('[data-menu]').onclick = ()=> renderMenuModal(train);
+
+    // notes shortcut
+    tile.querySelector('[data-open-notes]').onclick = ()=> openNotesModal(train);
+
+    host.appendChild(tile);
+  });
+}
+
+function renderTimersOnly(){
+  document.querySelectorAll(".tile").forEach(tile=>{
+    const start = tile.dataset.startIso;
+    const t = tile.querySelector("[data-timer]");
+    if (!t || !start) return;
+
+    // If closed, freeze timer at the point of closure (stored on render).
+    if ((tile.dataset.status || "open") === "closed"){
+      if (tile.dataset.frozen) t.textContent = tile.dataset.frozen;
+      return;
+    }
+
+    const ms = Date.now() - new Date(start).getTime();
+    t.textContent = fmtHMS(ms);
+  });
+}
+
+/* =========================
+   UI EVENTS
+========================= */
+function initUI(){
+  $("orgSelect").value = org_context;
+  $("orgSelect").addEventListener("change", ()=>{
+    org_context = $("orgSelect").value;
+    localStorage.setItem("star_org", org_context);
+    toast("Org context set");
+    computeAndRenderAll();
+  });
+
+  $("copyLinkBtn").addEventListener("click", async ()=>{
+    await navigator.clipboard.writeText(window.location.href);
+    toast("Link copied");
+  });
+
+  $("startIncidentBtn").addEventListener("click", async ()=>{ await ensureIncidentStarted(false); });
+
+  $("newTrainBtn").addEventListener("click", openAddTrainModal);
+  $("closeIncidentBtn").addEventListener("click", closeIncidentHard);
+
+  $("searchBox").addEventListener("input", ()=>{
+    fText = $("searchBox").value.trim();
+    renderTiles();
+  });
+  $("filterStatus").addEventListener("change", ()=>{
+    fStatus = $("filterStatus").value.trim();
+    renderTiles();
+  });
+  $("filterRisk").addEventListener("change", ()=>{
+    fRisk = $("filterRisk").value.trim();
+    renderTiles();
+  });
+  $("clearFiltersBtn").addEventListener("click", ()=>{
+    $("searchBox").value = "";
+    $("filterStatus").value = "";
+    $("filterRisk").value = "";
+    fText = fStatus = fRisk = "";
+    renderTiles();
+  });
+
+  $("modalCloseBtn").onclick = ()=>showModal(false);
+  $("modalOverlay").addEventListener("click", (e)=>{
+    if (e.target === $("modalOverlay")) showModal(false);
+  });
+  document.addEventListener("keydown", (e)=>{
+    if (e.key === "Escape" && $("modalOverlay").style.display === "block") showModal(false);
+  });
+}
+
+/* =========================
+   BOOT
+========================= */
+(async function boot(){
+  initUI();
+  await ensureIncident();
+  await loadAll();
+  subscribeRealtime();
+  // Fallback refresh (in case Realtime isn't enabled on the tables)
+  setInterval(async ()=>{ await loadAll(); }, 20000);
+})();
+</script>
+
+</body>
+</html>
