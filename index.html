@@ -3081,6 +3081,18 @@ function openAddTrainModal(){
 async function closeIncidentHard(){
   if (!confirm("Close incident? This will clear the board and archive the current session for future callback/review.")) return;
 
+  // Auto-export a final PDF snapshot before archiving the session
+  try{
+    const ts = (new Date()).toISOString().slice(0,19).replace(/[:T]/g,'-');
+    const finalName = `STaR_Incident_${incident_key||'overview'}_FINAL_${ts}.pdf`;
+    await exportIncidentPDF({ filename: finalName, toast: false });
+    toast('Final PDF exported');
+  }catch(e){
+    console.warn('Final PDF export failed on close', e);
+    toast('Warning: final PDF export failed');
+  }
+
+
   try{
     const oldSession = incident?.current_session_id || null;
     const archivedAt = nowISO();
@@ -3411,6 +3423,44 @@ function tokenLabel(v){
 function matrixLinesForPDF(train){
   const out = [];
 
+  // Prefer the computed matrix picks if available (avoids schema drift breaking PDF output)
+  try{
+    const r = computeMatrixRisk(train);
+    if (r && r.picks && typeof r.picks === "object"){
+      const labels = {
+        pax_loading: "Passenger loading",
+        traction_power_available: "Traction power availability (train)",
+        toilets: "Toilets",
+        vulnerable: "Vulnerable passengers",
+        onboard_env: "On-board environment",
+        proximity_station: "Proximity to station",
+        proximity_depot: "Proximity to depot",
+        other_transport: "Other transport available",
+        egress_view: "Egress view / options",
+        outside_env: "Outside environment",
+        train_type: "Train type / formation",
+        traction_current: "Traction current / system",
+        staff_onboard: "Staff on board",
+        comms: "On-board communications",
+        hvac_lighting: "HVAC / lighting"
+      };
+      const order = ["pax_loading","traction_power_available","toilets","vulnerable","onboard_env",
+        "proximity_station","proximity_depot","other_transport","egress_view","outside_env",
+        "train_type","traction_current","staff_onboard","comms","hvac_lighting"];
+      order.forEach((k)=>{
+        const v = r.picks[k];
+        if (v == null || String(v).trim()==="") return;
+        let pts = "";
+        try{
+          if (typeof RM === "object" && RM[k] && RM[k][v] !== undefined) pts = RM[k][v];
+        }catch(e){}
+        out.push((labels[k]||k) + ": " + tokenLabel(v) + (pts !== "" ? (" (+" + pts + ")") : ""));
+      });
+      if (out.length) return out;
+    }
+  }catch(e){ /* ignore */ }
+
+
   // 1) Try JSON blob fields (older/newer variants)
   let raw = train?.risk_matrix ?? train?.matrix ?? train?.matrix_picks ?? null;
   let picks = null;
@@ -3528,7 +3578,7 @@ function planBulletsForPDF(train){
   return { pref, key, bullets };
 }
 
-async function exportIncidentPDF(){
+async function exportIncidentPDF(opts={}){
   try{
     if (!window.jspdf || !window.jspdf.jsPDF){
       toast("PDF engine not loaded");
@@ -3723,9 +3773,10 @@ async function exportIncidentPDF(){
       doc.setTextColor(0,0,0);
     });
 
-    const fname = "STaR_Incident_" + (incident_key || "overview") + "_" + (new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')) + ".pdf";
+    const ts = (new Date()).toISOString().slice(0,19).replace(/[:T]/g,'-');
+    const fname = (opts && opts.filename) ? opts.filename : ("STaR_Incident_" + (incident_key || "overview") + "_" + ts + ".pdf");
     doc.save(fname);
-    toast("PDF exported");
+    if (!opts || opts.toast !== false) toast("PDF exported");
   } catch(err){
     console.error(err);
     toast("PDF export failed");
