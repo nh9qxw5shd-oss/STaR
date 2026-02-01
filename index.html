@@ -1095,17 +1095,6 @@ function isMatrixComplete(tr){
   if (typeof m === "object") return Object.keys(m).length > 0;
   return false;
 }
-function isWelfareComplete(tr){
-  // Best-effort: treat as complete if at least one welfare field is set beyond defaults
-  const w = tr?.welfare || {};
-  const fields = ["toilets","hvac","power","water","food","crowding","vulnerable_pax","medical_needs"];
-  return fields.some(k=>{
-    const v = w[k];
-    if (v == null) return false;
-    if (typeof v === "boolean") return v === true;
-    return (v+"").trim() !== "" && (v+"").toLowerCase() !== "unknown";
-  });
-}
 
 function checkTrainMilestones(){
   if (!incident || !incident_key) return;
@@ -1140,18 +1129,17 @@ function checkTrainMilestones(){
     }
 
 
-    // 20m: complete RAG + welfare if missing
-    if (mins >= 20 && !ns.m20 && (!isMatrixComplete(tr) || !isWelfareComplete(tr))){
+    // 20m: complete RAG (risk matrix) if nothing captured yet
+    if (mins >= 20 && !ns.m20 && !isMatrixComplete(tr)){
       ns.m20 = true;
       pushNotif({
         train: tr,
         level: "warn",
         title: "20 min check",
-        body: "Complete RAG and Welfare/System data so we’re not guessing under pressure.",
+        body: "Complete RAG (Risk Matrix) so we’re not guessing under pressure.",
         actions: [
           {label:"Open RAG", primary:true, onClick: ()=> openMatrixModal(tr.id)},
-          {label:"Open Welfare", onClick: ()=> openWelfareModal(tr.id)},
-        ],
+],
         key: "m20"
       });
     }
@@ -1172,7 +1160,7 @@ function checkTrainMilestones(){
     }
 
     // 60m: nominate + execute plan (also becomes the repeating 20-min cycle thereafter)
-    if (mins >= 60 && !ns.m60 && !hasPreferredAndExecuting(tr)){
+    if (mins >= 60 && !ns.m60 && !hasPreferredAndExecuting(tr) && !hasAnyPlanData(tr)){
       ns.m60 = true;
       pushNotif({
         train: tr,
@@ -2507,71 +2495,6 @@ function openPlanModal(train){
 
 
 
-function openWelfareModal(train){
-  showModal(true);
-  setModalHeader(`Welfare & systems · ${train.headcode}`, "Passenger load + key systems. Hazards live in their own module.");
-
-  setModalBody(`
-    <div class="uiGrid2">
-      <div class="uiCard">
-        <div class="uiLabel">Passenger load</div>
-        <div class="seg">
-          ${segButton("Unknown","unknown",train.pax_load||"unknown","pax")}
-          ${segButton("Low","low",train.pax_load||"unknown","pax")}
-          ${segButton("Med","med",train.pax_load||"unknown","pax")}
-          ${segButton("High","high",train.pax_load||"unknown","pax")}
-        </div>
-      </div>
-      <div class="uiCard">
-        <div class="uiLabel">HVAC</div>
-        <div class="seg">
-          ${segButton("Unknown","unknown",train.hvac_status||"unknown","hvac")}
-          ${segButton("OK","ok",train.hvac_status||"unknown","hvac")}
-          ${segButton("Failed","failed",train.hvac_status||"unknown","hvac")}
-        </div>
-      </div>
-      <div class="uiCard">
-        <div class="uiLabel">Toilets</div>
-        <div class="seg">
-          ${segButton("Unknown","unknown",train.toilet_status||"unknown","toilet")}
-          ${segButton("OK","ok",train.toilet_status||"unknown","toilet")}
-          ${segButton("Failed","failed",train.toilet_status||"unknown","toilet")}
-        </div>
-      </div>
-      <div class="uiCard">
-        <div class="uiLabel">Power / lighting</div>
-        <div class="seg">
-          ${segButton("Unknown","unknown",train.power_status||"unknown","power")}
-          ${segButton("OK","ok",train.power_status||"unknown","power")}
-          ${segButton("Failed","failed",train.power_status||"unknown","power")}
-        </div>
-      </div>
-    </div>
-  `);
-
-  setModalActions(`
-    <button class="btn" id="backToMenuBtn">Back</button>
-    <button class="btn primary" id="saveWelfareBtn">Save</button>
-  `);
-
-  bindSeg("pax", (val)=>{ train._draft_pax = val; });
-  bindSeg("hvac", (val)=>{ train._draft_hvac = val; });
-  bindSeg("toilet", (val)=>{ train._draft_toilet = val; });
-  bindSeg("power", (val)=>{ train._draft_power = val; });
-
-  $("backToMenuBtn").onclick = ()=>renderMenuModal(train);
-  $("saveWelfareBtn").onclick = async ()=>{
-    const patch = {
-      pax_load: train._draft_pax ?? train.pax_load ?? "unknown",
-      hvac_status: train._draft_hvac ?? train.hvac_status ?? "unknown",
-      toilet_status: train._draft_toilet ?? train.toilet_status ?? "unknown",
-      power_status: train._draft_power ?? train.power_status ?? "unknown",
-    };
-    await patchTrain(train.id, patch);
-    toast("Welfare updated");
-    renderMenuModal(train);
-  };
-}
 
 /* =========================
    HAZARDS (ticklist)
@@ -2735,6 +2658,8 @@ function ensureMap(lat, lon, zoom){
 
     // Leaflet sizing is allergic to modals. Kick it a few times.
     requestAnimationFrame(()=>{ try{ map.invalidateSize(); }catch(e){} });
+    setTimeout(()=>{ try{ map.invalidateSize(); }catch(e){} }, 150);
+    setTimeout(()=>{ try{ map.invalidateSize(); }catch(e){} }, 400);
     setTimeout(()=>{ try{ map.invalidateSize(); }catch(e){} }, 160);
     setTimeout(()=>{ try{ map.invalidateSize(); }catch(e){} }, 420);
   }, 30);
@@ -2759,6 +2684,7 @@ function setMarker(lat, lon, fromUser){
 }
 
 function openLocationModal(train){
+  showModal(true);
   setModalHeader(`Exact location · ${train.headcode}`, "Pin the train. Weather updates automatically.");
   const hasCoords = (train.lat != null && train.lon != null);
   const wx = train.weather_summary ? train.weather_summary : "No weather yet";
@@ -3284,6 +3210,21 @@ function initUI(){
   document.addEventListener("keydown", (e)=>{
     if (e.key === "Escape" && $("modalOverlay").style.display === "block") showModal(false);
   });
+
+  // Delegated tile actions (survives re-renders)
+  $("tiles").addEventListener("click", (e)=>{
+    const notesBtn = e.target.closest("[data-open-notes]");
+    if (notesBtn){
+      e.preventDefault();
+      e.stopPropagation();
+      const tile = notesBtn.closest(".tile");
+      const id = tile?.getAttribute("data-id");
+      const tr = trains.find(t=> String(t.id) === String(id));
+      if (tr) openNotesModal(tr);
+      return;
+    }
+  });
+
 }
 
 /* =========================
