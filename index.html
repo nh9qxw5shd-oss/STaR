@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>STaR V1 – Stranded Train Risk</title>
+  <title>STaR V2 – Stranded Train Risk</title>
 
   <!-- Leaflet (map picker) -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
@@ -625,7 +625,9 @@
       font-size: 13px;
     }
     .seg button:hover{ background: rgba(255,255,255,.10); }
-    .seg button.active{
+    
+  .seg[data-locked="1"] button{opacity:.45; pointer-events:none; filter:grayscale(0.2);} 
+.seg button.active{
       background: rgba(96,165,250,.20);
       border-color: rgba(96,165,250,.35);
       box-shadow: 0 0 0 4px rgba(96,165,250,.10) inset;
@@ -811,7 +813,21 @@
     /* tiny inline svg icons */
     .ico{ width:16px; height:16px; display:inline-block; }
     .ico svg{ width:16px; height:16px; fill: currentColor; opacity:1; }
-  </style>
+  
+  /* Incident tabs (static URL, multiple incidents) */
+  .incidentTabsRow{padding:10px 14px 14px;border-top:1px solid rgba(15,23,42,.08);background:linear-gradient(180deg,rgba(255,255,255,.65),rgba(255,255,255,0));}
+  .incidentTabs{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .tabPill{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:999px;border:1px solid rgba(15,23,42,.12);background:#fff;box-shadow:0 1px 0 rgba(15,23,42,.05);cursor:pointer;user-select:none}
+  .tabPill:hover{border-color:rgba(15,23,42,.2)}
+  .tabPill.active{border-color:rgba(59,130,246,.45);box-shadow:0 6px 18px rgba(59,130,246,.12)}
+  .tabPill .k{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-weight:800;font-size:12px;letter-spacing:.06em}
+  .tabPill .meta{font-size:12px;color:rgba(15,23,42,.65)}
+  .tabPill .dot{width:8px;height:8px;border-radius:999px;background:rgba(34,197,94,.9)}
+  .tabPill.ghost{background:rgba(255,255,255,.6)}
+  .tabPill.add{border-style:dashed}
+  .tabHint{font-size:12px;color:rgba(15,23,42,.6);margin-left:4px}
+
+</style>
 </head>
 
 <body>
@@ -836,8 +852,8 @@
         <path d="M24 50h16" stroke="rgba(255,255,255,.75)" stroke-width="3" stroke-linecap="round"/>
       </svg>
       <div>
-        <div class="name">STaR <span class="chip" style="margin-left:8px;"><span class="dot"></span>V1</span></div>
-        <div class="sub">Stranded Train Risk · minimal tiles, everything else in modules</div>
+        <div class="name">STaR <span class="chip" style="margin-left:8px;"><span class="dot"></span>V2</span></div>
+        <div class="sub">Stranded Train Risk · Collaborative and efficient risk management</div>
       </div>
     </div>
 
@@ -858,15 +874,7 @@
         </span>
         Copy link
       </button>
-
-      <button id="startIncidentBtn" class="btn" title="Start incident clock">
-        <span class="ico" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Z"/></svg>
-        </span>
-        Start
-      </button>
-
-      <button id="newTrainBtn" class="btn primary">
+<button id="newTrainBtn" class="btn primary">
         <span class="ico" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M11 4h2v16h-2V4Zm-7 7h16v2H4v-2Z"/></svg>
         </span>
@@ -890,6 +898,13 @@
       </button>
     </div>
   </div>
+
+  <div class="incidentTabsRow">
+    <div class="incidentTabs" id="incidentTabs">
+      <!-- populated by JS -->
+    </div>
+  </div>
+
 </header>
 
 <main>
@@ -1477,18 +1492,33 @@ let notifTimer = null;
 ========================= */
 function getIncidentKey(){
   const url = new URL(window.location.href);
-  let k = url.searchParams.get("i");
-  if (!k) {
-    k = uid();
-    url.searchParams.set("i", k);
-    history.replaceState(null, "", url.toString());
-  }
-  return k;
+  const k = url.searchParams.get("i");
+  return (k && String(k).trim()) ? String(k).trim() : "";
 }
 
-async function ensureIncident(){
-  incident_key = getIncidentKey();
-  $("incidentKeyLabel").textContent = incident_key;
+function setIncidentKeyInURL(k){
+  const url = new URL(window.location.href);
+  if (k){
+    url.searchParams.set("i", k);
+  } else {
+    url.searchParams.delete("i");
+  }
+  history.replaceState(null, "", url.toString());
+}
+
+
+async function ensureIncident(forKey, {createIfMissing=true} = {}){
+  incident_key = String(forKey || "").trim();
+  $("incidentKeyLabel").textContent = incident_key ? incident_key : "No incident";
+
+  if (!incident_key){
+    incident = null;
+    trains = [];
+    notesByTrain = new Map();
+    computeAndRenderAll();
+    startIncidentClock();
+    return;
+  }
 
   const { data: existing, error: e1 } = await sb
     .from("star_incidents")
@@ -1500,7 +1530,7 @@ async function ensureIncident(){
 
   if (existing) {
     incident = existing;
-  } else {
+  } else if (createIfMissing) {
     const payload = { incident_key, created_at: nowISO(), created_by_org: org_context || null };
     const { data: created, error: e2 } = await sb
       .from("star_incidents")
@@ -1509,11 +1539,12 @@ async function ensureIncident(){
       .single();
     if (e2) { console.error(e2); toast("DB error creating incident"); return; }
     incident = created;
+  } else {
+    incident = null;
   }
 
-  
-  // Ensure we have an active session id for this incident link (lets us "wipe" the board without deleting history)
-  if (!incident?.current_session_id) {
+  // Ensure we have an active session id (used for "board wipe" without deleting)
+  if (incident && !incident.current_session_id) {
     const newSession = uid();
     const { data: patched, error: eSess } = await sb
       .from("star_incidents")
@@ -1526,10 +1557,13 @@ async function ensureIncident(){
       toast("DB error initialising incident session");
     } else if (patched) {
       incident = patched;
+    } else {
+      incident.current_session_id = newSession;
     }
   }
-startIncidentClock();
+  startIncidentClock();
 }
+
 
 function startIncidentClock(){
   // Clock only runs once the incident has been explicitly started.
@@ -1578,6 +1612,112 @@ async function ensureIncidentStarted(auto=false){
   startIncidentClock();
   toast(auto ? "Incident auto-started" : "Incident started");
   return true;
+}
+
+
+/* =========================
+   INCIDENT TABS (static URL)
+========================= */
+let openIncidents = [];
+
+async function loadOpenIncidents(){
+  try{
+    const { data, error } = await sb
+      .from("star_incidents")
+      .select("incident_key,created_at,created_by_org,started_at,started_by_org,current_session_id")
+      .not("started_at","is",null)
+      .order("started_at",{ascending:false})
+      .limit(25);
+    if (error){ console.error(error); return []; }
+    openIncidents = data || [];
+    return openIncidents;
+  }catch(e){
+    console.error(e);
+    return [];
+  }
+}
+
+function fmtTabTime(iso){
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleString("en-GB",{hour:"2-digit",minute:"2-digit",day:"2-digit",month:"short"});
+}
+
+function renderIncidentTabs(){
+  const host = $("incidentTabs");
+  if (!host) return;
+  host.innerHTML = "";
+
+  if (!openIncidents.length){
+    const hint = document.createElement("div");
+    hint.className = "tabHint";
+    hint.textContent = "No open incidents. Add a train to start one.";
+    host.appendChild(hint);
+  } else {
+    openIncidents.forEach(inc=>{
+      const b = document.createElement("div");
+      b.className = "tabPill" + (inc.incident_key === incident_key ? " active" : "");
+      b.setAttribute("role","button");
+      b.setAttribute("tabindex","0");
+      b.innerHTML = `
+        <span class="dot" aria-hidden="true"></span>
+        <span class="k">${escapeHtml(inc.incident_key)}</span>
+        <span class="meta">${escapeHtml((inc.created_by_org||inc.started_by_org||""))}</span>
+        <span class="meta">${escapeHtml(fmtTabTime(inc.started_at))}</span>
+      `;
+      b.onclick = ()=> selectIncident(inc.incident_key);
+      host.appendChild(b);
+    });
+  }
+
+  const add = document.createElement("div");
+  add.className = "tabPill add ghost";
+  add.setAttribute("role","button");
+  add.setAttribute("tabindex","0");
+  add.innerHTML = `<span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M11 4h2v16h-2V4Zm-7 7h16v2H4v-2Z"/></svg></span><span class="meta">New incident</span>`;
+  add.onclick = async ()=>{
+    await createNewIncidentAndSelect();
+  };
+  host.appendChild(add);
+}
+
+async function refreshIncidentTabs(){
+  await loadOpenIncidents();
+  renderIncidentTabs();
+}
+
+async function selectIncident(k){
+  if (!k) return;
+  await ensureIncident(k, {createIfMissing:true});
+  setIncidentKeyInURL(k);
+  await loadAll();
+  subscribeRealtime();
+  computeAndRenderAll();
+  await refreshIncidentTabs();
+}
+
+async function createNewIncidentAndSelect(){
+  const k = uid();
+  await ensureIncident(k, {createIfMissing:true});
+  // Do NOT force unique URL creation unless there is an active selection.
+  setIncidentKeyInURL(k);
+  await loadAll();
+  subscribeRealtime();
+  computeAndRenderAll();
+  await refreshIncidentTabs();
+  toast("Incident created");
+  return k;
+}
+
+function clearSelectedIncident(){
+  incident_key = "";
+  incident = null;
+  trains = [];
+  notesByTrain = new Map();
+  setIncidentKeyInURL("");
+  $("incidentKeyLabel").textContent = "No incident";
+  computeAndRenderAll();
 }
 
 /* =========================
@@ -2367,6 +2507,8 @@ function openPlanModal(train){
     const statusNow = computePlanStatus();
     const cls = ragBadgeClass((train.plan_status==="executing")?"red":(train.plan_status==="agreed")?"amber":"green");
 
+    const actioningLocked = !(preferred && preferred !== "none");
+
     setModalBody(`
       <div class="uiCard" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
         <div>
@@ -2390,31 +2532,6 @@ function openPlanModal(train){
         </div>
       </div>
 
-      <div class="uiGrid2">
-        <div class="uiCard">
-          <div class="uiLabel">Preferred option</div>
-          <div class="seg">
-            ${segButton("None","none",preferred,"pref")}
-            ${segButton("Plan A","A",preferred,"pref")}
-            ${segButton("Plan B","B",preferred,"pref")}
-            ${segButton("Plan C","C",preferred,"pref")}
-          </div>
-          <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:8px;">
-            Selecting a preferred plan sets status to <b>AGREED</b> on save.
-          </div>
-        </div>
-
-        <div class="uiCard">
-          <div class="uiLabel">Actioning</div>
-          <div class="seg">
-            ${segButton("Not actioning","0",actioning?"1":"0","act")}
-            ${segButton("Actioning now","1",actioning?"1":"0","act")}
-          </div>
-          <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:8px;">
-            Actioning sets status to <b>EXECUTING</b> on save.
-          </div>
-        </div>
-      </div>
 
       <div class="uiCard">
         <div class="uiLabel">Aim</div>
@@ -2453,6 +2570,40 @@ function openPlanModal(train){
         <div class="uiLabel">Plan notes (short)</div>
         <textarea class="uiInput" id="planNotes" maxlength="240" placeholder="Key steps, access, constraints, who owns what…">${escapeHtml(p.notes || "")}</textarea>
       </div>
+
+      <div class="uiGrid2">
+        <div class="uiCard">
+          <div class="uiLabel">Build plans first</div>
+          <div style="color:var(--muted); font-size:12px; font-weight:900;">
+            Populate Plan A/B/C above, then nominate a preferred option.
+          </div>
+        </div>
+
+        <div class="uiCard">
+          <div class="uiLabel">Preferred option</div>
+          <div class="seg">
+            ${segButton("None","none",preferred,"pref")}
+            ${segButton("Plan A","A",preferred,"pref")}
+            ${segButton("Plan B","B",preferred,"pref")}
+            ${segButton("Plan C","C",preferred,"pref")}
+          </div>
+          <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:8px;">
+            Preferred plan sets status to <b>AGREED</b> on save.
+          </div>
+        </div>
+
+        <div class="uiCard" style="grid-column:1 / -1;">
+          <div class="uiLabel">Actioning</div>
+          <div class="seg" data-locked="${actioningLocked ? "1" : "0"}" id="actSeg">
+            ${segButton("Not actioning","0",actioning?"1":"0","act")}
+            ${segButton("Actioning now","1",actioning?"1":"0","act")}
+          </div>
+          <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:8px;">
+            ${actioningLocked ? "Nominate a <b>preferred</b> plan first to unlock EXECUTING." : "Actioning sets status to <b>EXECUTING</b> on save."}
+          </div>
+        </div>
+      </div>
+
     `);
 
     // tabs
@@ -2465,8 +2616,8 @@ function openPlanModal(train){
     });
 
     // seg binds
-    bindSeg("pref", (val)=>{ preferred = val; pd.meta.preferred = preferred; });
-    bindSeg("act", (val)=>{ actioning = (val === "1"); pd.meta.actioning = actioning; });
+    bindSeg("pref", (val)=>{ preferred = val; pd.meta.preferred = preferred; renderPlanTab(activeTab); });
+    bindSeg("act", (val)=>{ if (!(preferred && preferred !== "none")) { toast("Nominate a preferred plan first."); renderPlanTab(activeTab); return; } actioning = (val === "1"); pd.meta.actioning = actioning; renderPlanTab(activeTab); });
     bindSeg("aim", (val)=>{ p.aim = val; });
     bindSeg("approach", (val)=>{ p.approach = val; });
     bindSeg("egress", (val)=>{ p.egress = val; });
@@ -2957,8 +3108,7 @@ async function closeIncidentHard(){
     // Rotate to a brand-new empty session for this incident link
     const newSession = uid();
     const patch = {
-      closed_at: archivedAt,
-      closed_by_org: (org_context || null),
+      // We keep history in the DB; we just make this incident inactive on the board.
       started_at: null,
       started_by_org: null,
       current_session_id: newSession
@@ -2975,10 +3125,9 @@ async function closeIncidentHard(){
 
     if (patchedIncident) incident = patchedIncident;
 
-    // Local wipe (board view only)
-    trains = [];
-    notesByTrain = new Map();
-    computeAndRenderAll();
+    // Local wipe (board view only) + deselect
+    clearSelectedIncident();
+    await refreshIncidentTabs();
     toast("Incident closed. Board cleared.");
 
   } catch (e){
@@ -3592,17 +3741,29 @@ function initUI(){
   });
 
   $("copyLinkBtn").addEventListener("click", async ()=>{
-    await navigator.clipboard.writeText(window.location.href);
-    toast("Link copied");
+    const url = new URL(window.location.href);
+    if (incident_key){
+      url.searchParams.set("i", incident_key);
+    } else {
+      url.searchParams.delete("i");
+    }
+    await navigator.clipboard.writeText(url.toString());
+    toast(incident_key ? "Incident link copied" : "Link copied");
   });
 
   $("exportPdfBtn").addEventListener("click", async ()=>{
+    if (!incident_key){ toast("No incident selected"); return; }
     await exportIncidentPDF();
   });
 
-  $("startIncidentBtn").addEventListener("click", async ()=>{ await ensureIncidentStarted(false); });
-
-  $("newTrainBtn").addEventListener("click", openAddTrainModal);
+  $("newTrainBtn").addEventListener("click", async ()=>{
+    // No start button. Adding a train is the "start".
+    if (!incident_key){
+      const k = await createNewIncidentAndSelect();
+      if (!k) return;
+    }
+    openAddTrainModal();
+  });
   $("closeIncidentBtn").addEventListener("click", closeIncidentHard);
 
   $("searchBox").addEventListener("input", ()=>{
@@ -3654,13 +3815,25 @@ function initUI(){
 ========================= */
 (async function boot(){
   initUI();
-  await ensureIncident();
-  await loadAll();
-  subscribeRealtime();
   ensureNotifHost();
   startNotifLoop();
+
+  // If URL has ?i=..., open that incident; otherwise show open incident tabs.
+  const k = getIncidentKey();
+  if (k){
+    await selectIncident(k);
+  } else {
+    $("incidentKeyLabel").textContent = "No incident";
+    await refreshIncidentTabs();
+    computeAndRenderAll();
+  }
+
   // Fallback refresh (in case Realtime isn't enabled on the tables)
-  setInterval(async ()=>{ await loadAll(); }, 20000);
+  setInterval(async ()=>{
+    if (!incident_key) { await refreshIncidentTabs(); return; }
+    await loadAll();
+    await refreshIncidentTabs();
+  }, 20000);
 })();
 </script>
 
