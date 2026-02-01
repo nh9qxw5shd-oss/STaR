@@ -12,6 +12,10 @@
   <!-- Supabase JS -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
+  <!-- PDF export (jsPDF) -->
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.5.29/dist/jspdf.plugin.autotable.min.js"></script>
+
   <style>
     :root{
       --bg1:#f6f8fc;
@@ -869,6 +873,15 @@
         Add train
       </button>
 
+
+
+      <button id="exportPdfBtn" class="btn" title="Export incident overview PDF">
+        <span class="ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 1 7 7v4h-2V9a5 5 0 0 0-10 0v4H5V9a7 7 0 0 1 7-7Zm-1 9h2v6h3l-4 4-4-4h3v-6Z"/></svg>
+        </span>
+        Export PDF
+      </button>
+
       <button id="closeIncidentBtn" class="btn danger" title="Close incident (wipe trains + notes)">
         <span class="ico" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M6 7h12v2H6V7Zm0 4h12v2H6v-2Zm0 4h12v2H6v-2Z"/></svg>
@@ -970,6 +983,42 @@ const CONFIG = {
   THRESHOLDS_MIN: { stranded: 20, amber: 40, red: 60 },
   WEATHER_ENDPOINT: "https://api.open-meteo.com/v1/forecast"
 };
+
+// Human-readable labels for Plan quick-look + PDF (keep global; do NOT bury inside a modal function)
+const PLAN_LABELS = {
+  aim: {
+    hold_manage: "Hold and manage passengers on board",
+    move_train: "Move train to nearest station or suitable place",
+    detrain: "Detrain passengers to a place of safety",
+    evacuate: "Evacuate passengers (controlled evacuation)",
+  },
+  approach: {
+    manage_onboard: "Manage on board with welfare mitigations",
+    move_to_platform: "Move to a platform / station environment",
+    detrain_to_track: "Detrain onto the trackside (controlled)",
+    evacuate_assisted: "Evacuate with emergency services support",
+  },
+  egress: {
+    platform: "To a platform / station",
+    trackside: "To trackside (controlled route to safety)",
+    adjacent_train: "Transfer to an adjacent train (if feasible)",
+    road: "To a road access point (via safe route)",
+    other: "Other / bespoke route",
+  },
+  resources: {
+    rio: "Rail Incident Officer",
+    btps: "British Transport Police",
+    fire: "Fire and Rescue Service",
+    ambulance: "Ambulance Service",
+    toc_staff: "Train Operator staff",
+    nr_ops: "Network Rail operations staff",
+    nr_mom: "Mobile Operations Manager",
+    isolations: "Electrical isolation / isolations support",
+    taxi_bus: "Road transport (bus/taxi)",
+    welfare: "Additional welfare supplies (water, blankets, etc.)",
+  }
+};
+
 
 /* =========================
    HELPERS
@@ -2078,9 +2127,16 @@ function openRiskMatrixModal(train, opts={}){
       console.warn("Matrix save full patch failed, retrying minimal:", error);
       const { error: e2 } = await sb.from("star_trains").update({ risk_matrix: matrixJson, ...derived, updated_at: nowISO(), updated_by_org: (org_context||null) }).eq("id", train.id).eq("incident_key", incident_key);
       if (e2){
-        console.error(e2);
-        toast("Matrix save failed (add risk_matrix column + RLS update)");
-        return;
+        // Final fallback: store only the matrix JSON (skip derived quick fields if your schema doesn't have them)
+        const { error: e3 } = await sb.from("star_trains")
+          .update({ risk_matrix: matrixJson, updated_at: nowISO(), updated_by_org: (org_context||null) })
+          .eq("id", train.id).eq("incident_key", incident_key);
+
+        if (e3){
+          console.error(e3);
+          toast("Matrix save failed (add risk_matrix column + RLS update)");
+          return;
+        }
       }
     }
 
@@ -2121,7 +2177,9 @@ function planStatusLabel(train){
   if (s === "none") return "NONE";
   return s.toUpperCase();
 }
-function openPlanSummaryModal(train){
+function openPlanSummaryModal(trainOrId){
+  const train = (trainOrId && typeof trainOrId === "object") ? trainOrId : ((typeof STATE !== "undefined" && Array.isArray(STATE.trains)) ? STATE.trains.find(t=> String(t.id)===String(trainOrId)) : null);
+  if(!train){ toast("Plan summary unavailable (train not found)", "warn"); return; }
   showModal(true);
   const pd = parsePlanDataFromTrain(train);
   const pref = getPreferredPlanKey(train);
@@ -2130,11 +2188,11 @@ function openPlanSummaryModal(train){
   const resources = Array.isArray(p.resources) ? p.resources : [];
   const bullet = (txt)=> `<li style="margin:6px 0;">${escapeHtml(txt)}</li>`;
   const labels = {
-    aim: (p.aim ? (PLAN.aim[p.aim] || p.aim) : null),
-    approach: (p.approach ? (PLAN.approach[p.approach] || p.approach) : null),
-    egress: (p.egress ? (PLAN.egress[p.egress] || p.egress) : null),
+    aim: (p.aim ? (PLAN_LABELS.aim[p.aim] || p.aim) : null),
+    approach: (p.approach ? (PLAN_LABELS.approach[p.approach] || p.approach) : null),
+    egress: (p.egress ? (PLAN_LABELS.egress[p.egress] || p.egress) : null),
   };
-  const resNice = resources.map(r => (PLAN.resources[r] || r.toUpperCase())).join(", ");
+  const resNice = resources.map(r => (PLAN_LABELS.resources[r] || r.toUpperCase())).join(", ");
   const notes = (p.notes || "").trim();
 
   setModalHeader(`Preferred plan · ${train.headcode}`, `${pref ? ("Plan " + pref) : "No preferred plan set"} · ${planStatusLabel(train)}`);
@@ -2256,8 +2314,7 @@ function openPlanModal(train){
       sta: "Station staff",
       mep: "M/EP response",
       snt: "S&T support"
-    },
-    review: { "10":"10m", "20":"20m", "30":"30m", "60":"60m" }
+    }
   };
 
   const hasAnyValue = (obj)=>{
@@ -2361,29 +2418,19 @@ function openPlanModal(train){
 
       <div class="uiCard">
         <div class="uiLabel">Aim</div>
-        ${mkSeg("aim", p.aim, PLAN.aim)}
+        ${mkSeg("aim", p.aim, PLAN_LABELS.aim)}
       </div>
 
       <div class="uiCard">
         <div class="uiLabel">Approach</div>
-        ${mkSeg("approach", p.approach, PLAN.approach)}
+        ${mkSeg("approach", p.approach, PLAN_LABELS.approach)}
       </div>
 
       <div class="uiCard">
         <div class="uiLabel">Egress route</div>
-        ${mkSeg("egress", p.egress, PLAN.egress)}
+        ${mkSeg("egress", p.egress, PLAN_LABELS.egress)}
       </div>
 
-      <div class="uiGrid2">
-        <div class="uiCard">
-          <div class="uiLabel">Cadence: Next assessment</div>
-          <div class="seg">
-            ${Object.entries(PLAN.review).map(([v,l])=>segButton("+"+l, v, "", "review")).join("")}
-          </div>
-          <div style="color:var(--muted); font-size:12px; font-weight:900; margin-top:8px;">
-            Current: <span style="font-family:var(--mono);">${train.next_review_at ? new Date(train.next_review_at).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}) : "—"}</span>
-          </div>
-        </div>
         <div class="uiCard">
           <div class="uiLabel">Location risk overlay</div>
           <div class="seg">
@@ -2394,12 +2441,11 @@ function openPlanModal(train){
             ${segButton("Remote","remote",train.location_risk||"unknown","locrisk")}
           </div>
         </div>
-      </div>
 
       <div class="uiCard">
         <div class="uiLabel">Resources / agencies</div>
         <div class="toggleList">
-          ${Object.entries(PLAN.resources).map(([id, label])=>mkToggle(id,label)).join("")}
+          ${Object.entries(PLAN_LABELS.resources).map(([id, label])=>mkToggle(id,label)).join("")}
         </div>
       </div>
 
@@ -2425,7 +2471,6 @@ function openPlanModal(train){
     bindSeg("approach", (val)=>{ p.approach = val; });
     bindSeg("egress", (val)=>{ p.egress = val; });
     bindSeg("locrisk", (val)=>{ train._draft_locrisk = val; });
-    bindSeg("review", (mins)=>{ train._draft_review = mins; });
 
     // toggles
     document.querySelectorAll(".toggleRow[data-res]").forEach(row=>{
@@ -2471,9 +2516,6 @@ function openPlanModal(train){
       plan_preferred: (preferred && preferred !== "none") ? preferred : null
     };
 
-    if (train._draft_review){
-      patch.next_review_at = new Date(Date.now() + Number(train._draft_review)*60000).toISOString();
-    }
 
     // store plan JSON
     const json = JSON.stringify(pd);
@@ -3172,6 +3214,374 @@ function renderTimersOnly(){
 /* =========================
    UI EVENTS
 ========================= */
+
+
+// =========================
+// PDF EXPORT
+// =========================
+function safeStr(v){
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") {
+    try { return JSON.stringify(v); } catch(e){ return String(v); }
+  }
+  return String(v);
+}
+function formatTS(ts){
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return safeStr(ts);
+  const pad = (n)=> String(n).padStart(2,'0');
+  return pad(d.getDate()) + "/" + pad(d.getMonth()+1) + "/" + d.getFullYear() + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+function minutesSince(ts){
+  if (!ts) return 0;
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return 0;
+  return Math.max(0, Math.floor((Date.now() - d.getTime())/60000));
+}
+
+function safeJSON(str){
+  try{
+    if (str == null) return null;
+    if (typeof str !== "string") return str;
+    const t = str.trim();
+    if (!t) return null;
+    return JSON.parse(t);
+  }catch(e){
+    return null;
+  }
+}
+function tokenLabel(v){
+  if (v == null) return "";
+  const s = String(v).trim();
+  if (!s) return "";
+  return s
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+function matrixLinesForPDF(train){
+  const out = [];
+
+  // 1) Try JSON blob fields (older/newer variants)
+  let raw = train?.risk_matrix ?? train?.matrix ?? train?.matrix_picks ?? null;
+  let picks = null;
+  if (raw){
+    picks = (typeof raw === "string") ? safeJSON(raw) : raw;
+  }
+
+  // 2) If still nothing, build from rm_* columns on the train row
+  if (!picks || typeof picks !== "object"){
+    picks = {};
+    const rmCols = [
+      "rm_pax_loading",
+      "rm_traction_power_available",
+      "rm_toilets",
+      "rm_vulnerable",
+      "rm_onboard_env",
+      "rm_proximity_station",
+      "rm_proximity_depot",
+      "rm_other_transport",
+      "rm_egress_view",
+      "rm_outside_env",
+      "rm_train_type",
+      "rm_traction_current",
+      "rm_staff_onboard",
+      "rm_comms",
+      "rm_hvac_lighting"
+    ];
+    rmCols.forEach((k) => {
+      const v = train?.[k];
+      if (v != null && String(v).trim() !== "") picks[k] = v;
+    });
+  }
+
+  // Normalize keys to rm_* form
+  const norm = {};
+  Object.entries(picks || {}).forEach(([k, v]) => {
+    if (v == null || String(v).trim() === "") return;
+    if (k.startsWith("rm_")) norm[k] = v;
+    else norm["rm_" + k] = v;
+  });
+
+  const keys = Object.keys(norm);
+  if (!keys.length) return out;
+
+  const fieldLabels = {
+    rm_pax_loading: "Passenger loading",
+    rm_traction_power_available: "Traction power availability (train)",
+    rm_toilets: "Toilets",
+    rm_vulnerable: "Vulnerable passengers",
+    rm_onboard_env: "On-board environment",
+
+    rm_proximity_station: "Proximity to station",
+    rm_proximity_depot: "Proximity to depot",
+    rm_other_transport: "Other transport available",
+    rm_egress_view: "Egress view / options",
+    rm_outside_env: "Outside environment",
+
+    rm_train_type: "Train type / formation",
+    rm_traction_current: "Traction current / system",
+    rm_staff_onboard: "Staff on board",
+    rm_comms: "On-board communications",
+    rm_hvac_lighting: "HVAC / lighting"
+  };
+
+  const ordered = [
+    "rm_pax_loading","rm_traction_power_available","rm_toilets","rm_vulnerable","rm_onboard_env",
+    "rm_proximity_station","rm_proximity_depot","rm_other_transport","rm_egress_view","rm_outside_env",
+    "rm_train_type","rm_traction_current","rm_staff_onboard","rm_comms","rm_hvac_lighting"
+  ];
+
+  ordered.forEach((k) => {
+    if (!(k in norm)) return;
+    const v = norm[k];
+    const label = fieldLabels[k] || k;
+    const rmKey = k.replace(/^rm_/, "");
+    let pts = "";
+    try{
+      if (typeof RM === "object" && RM[rmKey] && RM[rmKey][v] !== undefined) pts = RM[rmKey][v];
+    }catch(e){}
+    out.push(label + ": " + tokenLabel(v) + (pts !== "" ? (" (+" + pts + ")") : ""));
+  });
+
+  // Include any unexpected keys (future-proof) after the known ones
+  keys
+    .filter((k) => !ordered.includes(k))
+    .sort()
+    .forEach((k) => {
+      const v = norm[k];
+      const label = fieldLabels[k] || k;
+      const rmKey = k.replace(/^rm_/, "");
+      let pts = "";
+      try{
+        if (typeof RM === "object" && RM[rmKey] && RM[rmKey][v] !== undefined) pts = RM[rmKey][v];
+      }catch(e){}
+      out.push(label + ": " + tokenLabel(v) + (pts !== "" ? (" (+" + pts + ")") : ""));
+    });
+
+  return out;
+}
+
+function planBulletsForPDF(train){
+  const pd = parsePlanDataFromTrain(train);
+  const pref = getPreferredPlanKey(train);
+  const key = pref || 'A';
+  const p = (pd && pd[key]) ? pd[key] : {};
+  const bullets=[];
+  if (p.aim) bullets.push("Aim: " + (PLAN_LABELS.aim[p.aim] || p.aim));
+  if (p.approach) bullets.push("Approach: " + (PLAN_LABELS.approach[p.approach] || p.approach));
+  if (p.egress) bullets.push("Egress / welfare: " + (PLAN_LABELS.egress[p.egress] || p.egress));
+  if (Array.isArray(p.resources) && p.resources.length){
+    bullets.push("Resources / actions: " + p.resources.map(r=> (PLAN_LABELS.resources[r] || String(r).toUpperCase())).join(", "));
+  }
+  if (p.notes && String(p.notes).trim()) bullets.push("Plan notes: " + String(p.notes).trim());
+  if (!bullets.length) bullets.push("No plan details captured yet.");
+  return { pref, key, bullets };
+}
+
+async function exportIncidentPDF(){
+  try{
+    if (!window.jspdf || !window.jspdf.jsPDF){
+      toast("PDF engine not loaded");
+      return;
+    }
+
+    // pull latest in-memory data (and try a quick refresh without reloading the page)
+    try { await loadAll(); } catch(e){}
+
+    const jsPDF = window.jspdf.jsPDF;
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+
+    const margin = 42;
+    let y = margin;
+
+    const title = "STaR Incident Overview";
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(18);
+    doc.text(title, margin, y);
+
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(10);
+    y += 18;
+
+    const incKey = incident_key || "";
+    const started = incident && incident.started_at ? incident.started_at : null;
+    const closed = incident && incident.closed_at ? incident.closed_at : null;
+    const status = incident && incident.status ? incident.status : (started ? "active" : "inactive");
+
+    const metaLines = [
+      "Incident key: " + incKey,
+      "Status: " + status,
+      "Started: " + (started ? formatTS(started) : "Not started"),
+      (closed ? ("Closed: " + formatTS(closed)) : ""),
+      (org_context ? ("Context org: " + org_context) : "")
+    ].filter(Boolean);
+
+    metaLines.forEach(line=>{ doc.text(line, margin, y); y += 14; });
+
+    y += 6;
+
+    // KPI block
+    const total = Array.isArray(trains) ? trains.length : 0;
+    const active = (Array.isArray(trains) ? trains.filter(t=> !t.closed_at).length : 0);
+    const closedCount = total - active;
+    const incidentMins = started ? minutesSince(started) : 0;
+
+    doc.setFont('helvetica','bold');
+    doc.text("Snapshot", margin, y); y += 14;
+    doc.setFont('helvetica','normal');
+    doc.text("Incident elapsed: " + (started ? (incidentMins + " min") : "0 min"), margin, y); y += 14;
+    doc.text("Trains tracked: " + total + " (active " + active + ", closed " + closedCount + ")", margin, y); y += 18;
+
+    // Train summary table
+    const rows = (Array.isArray(trains) ? trains.slice() : []).map(t=>{
+      const risk = riskFromTrain(t);
+      const rag = (risk && risk.rag) ? String(risk.rag).toUpperCase() : "GREEN";
+      const score = (risk && typeof risk.score === 'number') ? risk.score : "";
+      const pref = (t.plan_preferred || "").toString().trim();
+      const pSt = planStatusLabel(t);
+      return [
+        (t.headcode || ""),
+        (t.location_text || ""),
+        rag,
+        String(score),
+        (pref ? ("Plan " + pref) : ""),
+        pSt,
+        (t.status === 'closed' ? "Closed" : "Active")
+      ];
+    });
+
+    doc.autoTable({
+      startY: y,
+      head: [["Train","Rough location","RAG","Score","Preferred plan","Plan status","State"]],
+      body: rows,
+      styles: { font: 'helvetica', fontSize: 9, cellPadding: 4 },
+      headStyles: { fillColor: [240,243,247], textColor: [17,24,39] },
+      theme: 'grid',
+      margin: { left: margin, right: margin }
+    });
+
+    y = doc.lastAutoTable.finalY + 18;
+
+    // Detailed pages per train
+    const trainsSorted = (Array.isArray(trains) ? trains.slice() : []).sort((a,b)=>{
+      const aM = minutesSince(a.created_at || a.started_at || a.added_at || a.created_at);
+      const bM = minutesSince(b.created_at || b.started_at || b.added_at || b.created_at);
+      return bM - aM;
+    });
+
+    trainsSorted.forEach((t, idx)=>{
+      doc.addPage();
+      let yy = margin;
+
+      const risk = riskFromTrain(t);
+      const rag = (risk && risk.rag) ? String(risk.rag).toUpperCase() : "GREEN";
+      const score = (risk && typeof risk.score === 'number') ? risk.score : 0;
+
+      doc.setFont('helvetica','bold');
+      doc.setFontSize(16);
+      doc.text((t.headcode || "(No headcode)"), margin, yy);
+      yy += 18;
+
+      doc.setFont('helvetica','normal');
+      doc.setFontSize(10);
+      const loc = (t.location_text || "");
+      const created = t.created_at || t.started_at || t.added_at;
+      const age = created ? minutesSince(created) : 0;
+      doc.text("Rough location: " + loc, margin, yy); yy += 14;
+      doc.text("Time since added: " + age + " min", margin, yy); yy += 14;
+      doc.text("RAG: " + rag + " (score " + score + ")", margin, yy); yy += 18;
+
+      // Risk breakdown
+      doc.setFont('helvetica','bold');
+      doc.text("Risk drivers (matrix)", margin, yy); yy += 12;
+      doc.setFont('helvetica','normal');
+      const brLines = matrixLinesForPDF(t);
+      if (!brLines.length) brLines.push("No matrix selections captured.");
+      doc.autoTable({
+        startY: yy,
+        head: [["Item"]],
+        body: brLines.map(l=>[l]),
+        styles: { font: 'helvetica', fontSize: 9, cellPadding: 4 },
+        theme: 'grid',
+        margin: { left: margin, right: margin }
+      });
+      yy = doc.lastAutoTable.finalY + 14;
+
+      // Weather (if captured)
+      doc.setFont('helvetica','bold');
+      doc.text("Weather", margin, yy); yy += 12;
+      doc.setFont('helvetica','normal');
+      const w = (t.weather_summary || t.weather_text || "");
+      doc.text(w ? String(w) : "Not captured", margin, yy);
+      yy += 18;
+
+      // Plans
+      const pb = planBulletsForPDF(t);
+      doc.setFont('helvetica','bold');
+      doc.text("Plan status", margin, yy); yy += 12;
+      doc.setFont('helvetica','normal');
+      doc.text("Preferred: " + (pb.pref ? ("Plan " + pb.pref) : "Not set") + "  ·  Status: " + planStatusLabel(t), margin, yy);
+      yy += 14;
+
+      doc.autoTable({
+        startY: yy,
+        head: [["Preferred plan summary"]],
+        body: pb.bullets.map(b=>[b]),
+        styles: { font: 'helvetica', fontSize: 9, cellPadding: 4 },
+        theme: 'grid',
+        margin: { left: margin, right: margin }
+      });
+      yy = doc.lastAutoTable.finalY + 14;
+
+      // Notes (latest 8)
+      doc.setFont('helvetica','bold');
+      doc.text("Notes (latest)", margin, yy); yy += 12;
+      doc.setFont('helvetica','normal');
+      let ns = [];
+      try{
+        const list = (notesByTrain && (notesByTrain.get(t.id) || notesByTrain.get(String(t.id)))) ;
+        ns = Array.isArray(list) ? list.slice(0, 8) : [];
+      } catch(e){ ns = []; }
+      const nRows = ns.map(n=>{
+        const who = (n.org_context || n.org || n.author || "");
+        const when = (n.created_at ? formatTS(n.created_at) : "");
+        const txt = (n.note_text || n.text || n.note || n.body || "");
+        return [when, who, String(txt)];
+      });
+      if (!nRows.length) nRows.push(["","","No notes captured."]);
+
+      doc.autoTable({
+        startY: yy,
+        head: [["Time","Org","Note"]],
+        body: nRows,
+        styles: { font: 'helvetica', fontSize: 8, cellPadding: 4 },
+        theme: 'grid',
+        margin: { left: margin, right: margin },
+        columnStyles: {
+          0: { cellWidth: 110 },
+          1: { cellWidth: 70 },
+          2: { cellWidth: pageW - margin*2 - 180 }
+        }
+      });
+
+      // footer
+      doc.setFontSize(8);
+      doc.setTextColor(107,114,128);
+      doc.text("Generated by STaR · " + formatTS(new Date().toISOString()), margin, pageH - 22);
+      doc.setTextColor(0,0,0);
+    });
+
+    const fname = "STaR_Incident_" + (incident_key || "overview") + "_" + (new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')) + ".pdf";
+    doc.save(fname);
+    toast("PDF exported");
+  } catch(err){
+    console.error(err);
+    toast("PDF export failed");
+  }
+}
 function initUI(){
   $("orgSelect").value = org_context;
   $("orgSelect").addEventListener("change", ()=>{
@@ -3184,6 +3594,10 @@ function initUI(){
   $("copyLinkBtn").addEventListener("click", async ()=>{
     await navigator.clipboard.writeText(window.location.href);
     toast("Link copied");
+  });
+
+  $("exportPdfBtn").addEventListener("click", async ()=>{
+    await exportIncidentPDF();
   });
 
   $("startIncidentBtn").addEventListener("click", async ()=>{ await ensureIncidentStarted(false); });
