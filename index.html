@@ -1074,11 +1074,19 @@ function fmtAgeMins(iso){
 }
 
 function hasAnyPlanData(tr){
-  const plans = tr?.plans || {};
-  return ["A","B","C"].some(k=>{
-    const p = plans[k] || {};
-    return Object.values(p).some(v=> (v ?? "").toString().trim() !== "");
-  });
+  // Plan data is stored in train.plan_data (JSON) in this build.
+  // Consider the "plan section fulfilled" if ANY field in Plan A/B/C has any value.
+  let pd = tr?.plan_data;
+  if (!pd) return false;
+  try { pd = (typeof pd === "string") ? JSON.parse(pd) : pd; } catch(e){ return false; }
+  const plans = pd?.plans || {};
+  const hasValue = (v)=>{
+    if (v === null || v === undefined) return false;
+    if (Array.isArray(v)) return v.length > 0;
+    if (typeof v === "object") return Object.values(v).some(hasValue);
+    return String(v).trim() !== "";
+  };
+  return ["A","B","C"].some(k => hasValue(plans?.[k]));
 }
 function hasPreferredAndExecuting(tr){
   const pref = (tr?.plan_preferred || "").toString().trim();
@@ -1138,7 +1146,7 @@ function checkTrainMilestones(){
         title: "20 min check",
         body: "Complete RAG (Risk Matrix) so we’re not guessing under pressure.",
         actions: [
-          {label:"Open RAG", primary:true, onClick: ()=> openMatrixModal(tr.id)},
+          {label:"Open RAG", primary:true, onClick: ()=> openRiskMatrixModal(tr.id)},
 ],
         key: "m20"
       });
@@ -1769,7 +1777,7 @@ function renderMenuModal(train){
     { key:"matrix", name:"Risk Matrix (RAG)", desc:"Excel-aligned scoring: On-board + Location + Traction" },
     ...(pref ? [{ key:"planSummary", name:`Preferred plan (Plan ${pref})`, desc:"Read-only bullet view for speed, tap to edit if needed" }] : []),
     { key:"plan",  name:"Plans (A/B/C)",     desc:"Build Plan A/B/C, set preferred option, actioning state + cadence" },
-    { key:"location", name:"Exact location", desc:"Map pin + nearest place + live weather" },
+    { key:"location", name:"Rough location", desc:"Map pin + nearest place + live weather (keep it rough)" },
     { key:"notes", name:"Notes",            desc:"Add note + view history" },
     { key:"close", name:"Close train",      desc:"Mark train closed" }
   ];
@@ -2122,11 +2130,11 @@ function openPlanSummaryModal(train){
   const resources = Array.isArray(p.resources) ? p.resources : [];
   const bullet = (txt)=> `<li style="margin:6px 0;">${escapeHtml(txt)}</li>`;
   const labels = {
-    aim: (p.aim ? (p.aim.replaceAll("_"," ").replaceAll("to","–")) : null),
-    approach: (p.approach ? (p.approach.replaceAll("_"," ").replaceAll("to","–")) : null),
-    egress: (p.egress ? (p.egress.replaceAll("_"," ").replaceAll("to","–")) : null),
+    aim: (p.aim ? (PLAN.aim[p.aim] || p.aim) : null),
+    approach: (p.approach ? (PLAN.approach[p.approach] || p.approach) : null),
+    egress: (p.egress ? (PLAN.egress[p.egress] || p.egress) : null),
   };
-  const resNice = resources.map(r=>r.toUpperCase()).join(", ");
+  const resNice = resources.map(r => (PLAN.resources[r] || r.toUpperCase())).join(", ");
   const notes = (p.notes || "").trim();
 
   setModalHeader(`Preferred plan · ${train.headcode}`, `${pref ? ("Plan " + pref) : "No preferred plan set"} · ${planStatusLabel(train)}`);
@@ -2685,7 +2693,7 @@ function setMarker(lat, lon, fromUser){
 
 function openLocationModal(train){
   showModal(true);
-  setModalHeader(`Exact location · ${train.headcode}`, "Pin the train. Weather updates automatically.");
+  setModalHeader(`Rough location · ${train.headcode}`, "Pin the train. Weather updates automatically.");
   const hasCoords = (train.lat != null && train.lon != null);
   const wx = train.weather_summary ? train.weather_summary : "No weather yet";
 
