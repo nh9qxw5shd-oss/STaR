@@ -1002,23 +1002,28 @@ const CONFIG = {
 // Human-readable labels for Plan quick-look + PDF (keep global; do NOT bury inside a modal function)
 const PLAN_LABELS = {
   aim: {
-    hold_manage: "Hold and manage passengers on board",
+    hold_manage: "Hold at current location",
     move_train: "Move train to nearest station or suitable place",
-    detrain: "Detrain passengers to a place of safety",
-    evacuate: "Evacuate passengers (controlled evacuation)",
+    evacuate: "Split units and evacuate passengers using the functional unit",
+    detrain: "Evacuate passengers (detrain)",
+    fix_fault: "Fix the unit fault",
   },
   approach: {
-    manage_onboard: "Manage on board with welfare mitigations",
-    move_to_platform: "Move to a platform / station environment",
-    detrain_to_track: "Detrain onto the trackside (controlled)",
-    evacuate_assisted: "Evacuate with emergency services support",
+    manage_onboard: "Manage onboard with welfare mitigation (for detained train)",
+    move_to_platform: "Move to platform / station",
+    evacuate_assist: "Move train forwards using degraded working",
+    fitters_site: "Fitters to site to rectify",
+    detrain_to_track: "Detrain via safest option",
   },
   egress: {
-    platform: "To a platform / station",
-    trackside: "To trackside (controlled route to safety)",
-    adjacent_train: "Transfer to an adjacent train (if feasible)",
-    road: "To a road access point (via safe route)",
-    other: "Other / bespoke route",
+    platform_station: "To platform / station",
+    transfer_side: "Transfer to another train – side to side",
+    transfer_end: "Transfer to another train – end to end",
+    transfer_ballast: "Transfer to another train – via ballast",
+    trackside_access: "Trackside – to access point",
+    trackside_station: "Trackside – to station / platform",
+    trackside_lx: "Trackside – to level crossing",
+    other: "Other / bespoke",
   },
   resources: {
     rio: "Rail Incident Officer",
@@ -2424,25 +2429,28 @@ function openPlanModal(train){
 
   const PLAN = {
     aim: {
-      hold_manage: "Hold & manage onboard",
-      move_train: "Move train under own power",
-      rescue_assist: "Assist / rescue movement",
-      detrain_platform: "Detrain to platform",
-      detrain_trackside: "Detrain trackside"
+      hold_manage: "Hold at current location",
+      move_train: "Move to nearest station / suitable place",
+      evacuate: "Split units; evacuate via functional unit",
+      detrain: "Evacuate passengers (detrain)",
+      fix_fault: "Fix the unit fault",
     },
     approach: {
-      stable: "Stabilise + reassure (comms/welfare)",
-      reset: "Reset / fault-find for movement",
-      tow: "Tow / assist movement",
-      wrong_road: "Wrong-road / special routing",
-      evacuate: "Evacuation managed"
+      manage_onboard: "Manage onboard with welfare mitigation",
+      move_to_platform: "Move to platform / station",
+      evacuate_assist: "Move forwards using degraded working",
+      fitters_site: "Fitters to site to rectify",
+      detrain_to_track: "Detrain via safest option",
     },
     egress: {
-      none: "No egress",
-      to_platform: "To platform",
-      to_station: "Trackside to station",
-      to_road: "Trackside to road access",
-      to_poi: "To place of safety"
+      platform_station: "To platform / station",
+      transfer_side: "Transfer to another train (side to side)",
+      transfer_end: "Transfer to another train (end to end)",
+      transfer_ballast: "Transfer to another train (via ballast)",
+      trackside_access: "Trackside to access point",
+      trackside_station: "Trackside to station / platform",
+      trackside_lx: "Trackside to level crossing",
+      other: "Other / bespoke",
     },
     resources: {
       tolo: "TOLO",
