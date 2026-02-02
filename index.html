@@ -1971,6 +1971,7 @@ function renderMenuModal(train){
     { key:"matrix", name:"Risk Matrix (RAG)", desc:"Excel-aligned scoring: On-board + Location + Traction" },
     ...(pref ? [{ key:"planSummary", name:`Preferred plan (Plan ${pref})`, desc:"Read-only bullet view for speed, tap to edit if needed" }] : []),
     { key:"plan",  name:"Plans (A/B/C)",     desc:"Build Plan A/B/C, set preferred option, actioning state + cadence" },
+    ...(needsRioChecklist(train) ? [{ key:"rio", name:"RIO Evac Checklist", desc:"Only shown when detrain plan is preferred (capture RIO checks fast)" }] : []),
     { key:"location", name:"Rough location", desc:"Map pin + nearest place + live weather (keep it rough)" },
     { key:"notes", name:"Notes",            desc:"Add note + view history" },
     { key:"close", name:"Close train",      desc:"Mark train closed" }
@@ -2007,6 +2008,7 @@ function openSectionModal(train, section){
   if (section === "matrix") return openRiskMatrixModal(train);
   if (section === "planSummary") return openPlanSummaryModal(train);
   if (section === "plan") return openPlanModal(train);
+  if (section === "rio") return openRioChecklistModal(train);
   if (section === "location") return openLocationModal(train);
   if (section === "notes") return openNotesModal(train);
 }
@@ -2321,6 +2323,232 @@ function planStatusLabel(train){
   if (s === "executing") return "EXECUTING";
   if (s === "none") return "NONE";
   return s.toUpperCase();
+}
+
+function needsRioChecklist(train){
+  // Show RIO Evac Checklist ONLY when:
+  // 1) A preferred plan exists, AND
+  // 2) The preferred plan's AIM is "Evacuate passengers (detrain)"
+  try{
+    const pd = parsePlanDataFromTrain(train);
+    const pref = getPreferredPlanKey(train);
+    if (!pref) return false;
+    const p = (pd && pd[pref]) ? pd[pref] : {};
+    return String(p.aim || "").toLowerCase() === "detrain";
+  }catch(e){ return false; }
+}
+
+function getRioChecklist(train){
+  const pd = parsePlanDataFromTrain(train);
+  const meta = (pd && pd.meta) ? pd.meta : {};
+  const rio = meta.rioChecklist && typeof meta.rioChecklist === "object" ? meta.rioChecklist : {};
+  return rio;
+}
+
+async function saveRioChecklist(train, patchObj){
+  const pd = parsePlanDataFromTrain(train);
+  if (!pd.meta) pd.meta = {};
+  const cur = (pd.meta.rioChecklist && typeof pd.meta.rioChecklist === "object") ? pd.meta.rioChecklist : {};
+  pd.meta.rioChecklist = { ...cur, ...patchObj, _updated_at: nowISO(), _updated_by: (org_context || null) };
+
+  // plan_data is JSONB in Supabase. Send an object (not a JSON string) so updates actually persist.
+  await patchTrain(train.id, { plan_data: pd });
+}
+
+function openRioChecklistModal(train){
+  showModal(true);
+  const pd = parsePlanDataFromTrain(train);
+  const pref = getPreferredPlanKey(train);
+  const p = (pref && pd && pd[pref]) ? pd[pref] : {};
+  const rio = getRioChecklist(train);
+
+  // prefill method from selected egress (preferred plan)
+  const prefMethod = p.egress ? (PLAN_LABELS.egress[p.egress] || p.egress) : "";
+  const method = (rio.method && String(rio.method).trim()) ? rio.method : prefMethod;
+
+  setModalHeader(`RIO Evac Checklist · ${train.headcode}`, `Visible only when preferred plan aim is detrain · Pref: ${pref ? ("Plan " + pref) : "—"}`);
+
+  const yn = (id, val)=>`
+    <div class="seg" id="${id}">
+      ${segButton("Yes","yes",val,id)}
+      ${segButton("No","no",val,id)}
+    </div>
+  `;
+
+  setModalBody(`
+    <div class="uiCard">
+      <div class="uiLabel">What is the method of evacuation?</div>
+      <input class="uiInput" id="rio_method" value="${escapeAttr(method||"")}" placeholder="Auto-filled from preferred egress route" />
+      <div class="uiHint">Auto-filled from preferred plan egress route. Keep it simple.</div>
+    </div>
+
+    <div class="uiCard">
+      <div class="uiLabel">What safeguards are needed for a safe, controlled evacuation?</div>
+      <textarea class="uiInput" id="rio_safeguards" placeholder="Key safeguards, caveats, comms, supervision…">${escapeHtml(rio.safeguards||"")}</textarea>
+    </div>
+
+    <div class="uiGrid2">
+      <div class="uiCard">
+        <div class="uiLabel">Do the lines have OLE?</div>
+        ${yn("rio_ole", rio.ole)}
+      </div>
+      <div class="uiCard" id="rio_isos_wrap" style="display:${(String(rio.ole||"") === "yes") ? "block" : "none"};">
+        <div class="uiLabel">Are isolations required / in place?</div>
+        ${yn("rio_isolations", rio.isolations)}
+      </div>
+    </div>
+
+    <div class="uiGrid2">
+      <div class="uiCard">
+        <div class="uiLabel">Do you have all necessary resources?</div>
+        ${yn("rio_resources_ok", rio.resources_ok)}
+      </div>
+      <div class="uiCard">
+        <div class="uiLabel">Has a safe route for the evacuation been identified?</div>
+        ${yn("rio_safe_route", rio.safe_route)}
+      </div>
+    </div>
+
+    <div class="uiGrid2">
+      <div class="uiCard">
+        <div class="uiLabel">Do you have sufficient lighting to enable a safe evacuation?</div>
+        ${yn("rio_lighting", rio.lighting)}
+      </div>
+      <div class="uiCard">
+        <div class="uiLabel">Is the evacuation location expecting to receive these passengers?</div>
+        ${yn("rio_receiving", rio.receiving)}
+      </div>
+    </div>
+
+    <div class="uiGrid2">
+      <div class="uiCard">
+        <div class="uiLabel">How many passengers are on board?</div>
+        <input class="uiInput" id="rio_pax" value="${escapeAttr(rio.pax||"")}" placeholder="e.g. 159" />
+      </div>
+      <div class="uiCard">
+        <div class="uiLabel">How many vulnerable passengers have been identified?</div>
+        <input class="uiInput" id="rio_vuln" value="${escapeAttr(rio.vulnerable||"")}" placeholder="e.g. 3" />
+      </div>
+    </div>
+
+    <div class="uiCard">
+      <div class="uiLabel">Who will take the lead for facilitating vulnerable passenger evacuation?</div>
+      <input class="uiInput" id="rio_lead" value="${escapeAttr(rio.lead||"")}" placeholder="Role / name / org" />
+    </div>
+
+    <div class="uiCard">
+      <div class="uiLabel">How much luggage is onboard and can this be managed by staff on site?</div>
+      <input class="uiInput" id="rio_luggage" value="${escapeAttr(rio.luggage||"")}" placeholder="Short note" />
+    </div>
+
+    <div class="uiCard">
+      <div class="uiLabel">Are other competent railway employees on-board to assist?</div>
+      <input class="uiInput" id="rio_other_staff" value="${escapeAttr(rio.other_staff||"")}" placeholder="Who / how many" />
+    </div>
+
+    <div class="uiCard">
+      <div class="uiLabel">Notes</div>
+      <textarea class="uiInput" id="rio_notes" placeholder="Anything else relevant…">${escapeHtml(rio.notes||"")}</textarea>
+    </div>
+  `);
+
+  setModalActions(`
+    <button class="btn" id="rioDoneBtn">Done</button>
+  `);
+
+  // bind yes/no segs
+  const onYesNo = (group, key)=>{
+    bindSeg(group, async (v)=>{
+      // special conditional display for isolations question
+      if (group === "rio_ole"){
+        $("rio_isos_wrap").style.display = (v === "yes") ? "block" : "none";
+        if (v !== "yes"){
+          // clear isolations if OLE = No
+          await saveRioChecklist(train, { ole: v, isolations: null });
+          return;
+        }
+      }
+      await saveRioChecklist(train, { [key]: v });
+    });
+  };
+
+  onYesNo("rio_ole", "ole");
+  onYesNo("rio_isolations", "isolations");
+  onYesNo("rio_resources_ok", "resources_ok");
+  onYesNo("rio_safe_route", "safe_route");
+  onYesNo("rio_lighting", "lighting");
+  onYesNo("rio_receiving", "receiving");
+
+  // text inputs auto-save (debounced-ish)
+  const wireText = (id, key)=>{
+    const el = $(id);
+    let tmo = null;
+    el.addEventListener("input", ()=>{
+      clearTimeout(tmo);
+      tmo = setTimeout(async ()=>{
+        await saveRioChecklist(train, { [key]: el.value });
+      }, 350);
+    });
+  };
+  wireText("rio_method","method");
+  wireText("rio_safeguards","safeguards");
+  wireText("rio_pax","pax");
+  wireText("rio_vuln","vulnerable");
+  wireText("rio_lead","lead");
+  wireText("rio_luggage","luggage");
+  wireText("rio_other_staff","other_staff");
+  wireText("rio_notes","notes");
+
+  $("rioDoneBtn").onclick = async ()=>{
+    // Final defensive save in case the user smashes Done before debounce fires.
+    const snap = {
+      method: $("rio_method")?.value ?? "",
+      safeguards: $("rio_safeguards")?.value ?? "",
+      pax: $("rio_pax")?.value ?? "",
+      vulnerable: $("rio_vuln")?.value ?? "",
+      lead: $("rio_lead")?.value ?? "",
+      luggage: $("rio_luggage")?.value ?? "",
+      other_staff: $("rio_other_staff")?.value ?? "",
+      notes: $("rio_notes")?.value ?? "",
+    };
+    await saveRioChecklist(train, snap);
+    showModal(false);
+    // refresh menu so the section stays accurate if preferred plan changed
+    computeAndRenderAll();
+  };
+}
+
+function rioLinesForPDF(train){
+  const rio = getRioChecklist(train);
+  const clean = (v)=> (v===null || v===undefined) ? "" : String(v).trim();
+  const yn = (v)=> (String(v).toLowerCase()==="yes") ? "Yes" : (String(v).toLowerCase()==="no" ? "No" : "");
+  const lines = [];
+
+  // only output if any data exists
+  const any = Object.keys(rio||{}).some(k=>{
+    if (k.startsWith("_")) return false;
+    const v = rio[k];
+    if (v === null || v === undefined) return false;
+    if (typeof v === "string") return v.trim().length > 0;
+    return true;
+  });
+  if (!any) return [];
+
+  lines.push("Evac method: " + clean(rio.method));
+  if (clean(rio.safeguards)) lines.push("Safeguards: " + clean(rio.safeguards));
+  if (yn(rio.ole)) lines.push("OLE present: " + yn(rio.ole));
+  if (String(rio.ole).toLowerCase()==="yes" && yn(rio.isolations)) lines.push("Isolations required/in place: " + yn(rio.isolations));
+  if (yn(rio.resources_ok)) lines.push("All necessary resources: " + yn(rio.resources_ok));
+  if (yn(rio.safe_route)) lines.push("Safe route identified: " + yn(rio.safe_route));
+  if (yn(rio.lighting)) lines.push("Sufficient lighting: " + yn(rio.lighting));
+  if (clean(rio.pax)) lines.push("Passengers onboard: " + clean(rio.pax));
+  if (clean(rio.vulnerable)) lines.push("Vulnerable passengers: " + clean(rio.vulnerable));
+  if (clean(rio.lead)) lines.push("Vulnerable lead: " + clean(rio.lead));
+  if (clean(rio.luggage)) lines.push("Luggage / manageability: " + clean(rio.luggage));
+  if (clean(rio.other_staff)) lines.push("Other competent staff onboard: " + clean(rio.other_staff));
+  if (yn(rio.receiving)) lines.push("Receiving location expecting pax: " + yn(rio.receiving));
+  if (clean(rio.notes)) lines.push("Notes: " + clean(rio.notes));
+  return lines.filter(Boolean);
 }
 function openPlanSummaryModal(trainOrId){
   const train = (trainOrId && typeof trainOrId === "object") ? trainOrId : ((typeof STATE !== "undefined" && Array.isArray(STATE.trains)) ? STATE.trains.find(t=> String(t.id)===String(trainOrId)) : null);
@@ -3252,7 +3480,20 @@ function renderTiles(){
 
     const prefPlan = getPreferredPlanKey(train);
     const planLabel = prefPlan ? prefPlan : planStatusLabel(train);
-    const planText = prefPlan ? `PLAN ${prefPlan}` : `PLAN ${planLabel}`;
+    // If a preferred plan exists, show it with the plan AIM for at-a-glance understanding.
+    let prefAimLabel = "";
+    try{
+      if (prefPlan){
+        const pdTile = parsePlanDataFromTrain(train);
+        const aimKey = pdTile?.[prefPlan]?.aim;
+        if (aimKey){
+          prefAimLabel = (PLAN_LABELS?.aim?.[aimKey] || aimKey);
+        }
+      }
+    }catch(e){ prefAimLabel = ""; }
+    const planText = prefPlan
+      ? `PLAN ${prefPlan}${prefAimLabel ? ` · ${prefAimLabel}` : ""}`
+      : `PLAN ${planLabel}`;
     const planDataAttr = prefPlan ? 'data-open-plan-summary="1"' : 'data-open-plan="1"';
     const planBadge = (train.plan_status === "agreed" || train.plan_status === "executing") ? "info" : (train.plan_status === "forming" ? "warn" : "soft");
     const ragCls = ragBadgeClass(risk.rag);
@@ -3742,6 +3983,25 @@ async function exportIncidentPDF(opts={}){
         margin: { left: margin, right: margin }
       });
       yy = doc.lastAutoTable.finalY + 14;
+
+      // RIO Evac Checklist (conditional)
+      if (needsRioChecklist(t)){
+        const rLines = rioLinesForPDF(t);
+        if (rLines.length){
+          doc.setFont('helvetica','bold');
+          doc.text("RIO Evac Checklist", margin, yy); yy += 12;
+          doc.setFont('helvetica','normal');
+          doc.autoTable({
+            startY: yy,
+            head: [["Check / detail"]],
+            body: rLines.map(l=>[l]),
+            styles: { font: 'helvetica', fontSize: 9, cellPadding: 4 },
+            theme: 'grid',
+            margin: { left: margin, right: margin }
+          });
+          yy = doc.lastAutoTable.finalY + 14;
+        }
+      }
 
       // Notes (latest 8)
       doc.setFont('helvetica','bold');
