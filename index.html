@@ -1479,7 +1479,10 @@ function lsSet(key, value){
 }
 
 let incident_key = "";
-let org_context = lsGet("star_org","");
+const ACTING_AS_KEY = "star_acting_as";
+let org_context = lsGet(ACTING_AS_KEY, "") || lsGet("star_org","");
+if (org_context) { lsSet(ACTING_AS_KEY, org_context); }
+
 let trains = [];
 let notesByTrain = new Map();
 let incident = null;
@@ -1608,7 +1611,7 @@ async function ensureIncidentStarted(auto=false){
   // If already started, just ensure clock is running.
   if (incident?.started_at){ startIncidentClock(); return true; }
 
-  const when = nowISO();
+  const when = startOverrideIso || nowISO();
   const patch = { started_at: when, started_by_org: (org_context || null) };
 
   const { data, error } = await sb
@@ -1760,6 +1763,32 @@ async function loadTrains(){
     .order("created_at", { ascending: false });
   if (error) { console.error(error); toast("DB error loading trains"); return; }
   trains = data || [];
+
+  // Reconcile incident start against earliest train stranded_at (supports backdated additions)
+  try{
+    if (incident && incident.started_at && Array.isArray(trains) && trains.length){
+      const minMs = trains.reduce((acc,t)=>{
+        const ms = new Date(t.stranded_at||t.created_at||"").getTime();
+        if (isNaN(ms)) return acc;
+        return (acc===null||ms<acc) ? ms : acc;
+      }, null);
+      const iMs = new Date(incident.started_at).getTime();
+      if (minMs!==null && !isNaN(iMs) && minMs < iMs){
+        const minIso = new Date(minMs).toISOString();
+        const { data: idata, error: ierr } = await sb
+          .from("star_incidents")
+          .update({ started_at: minIso })
+          .eq("incident_key", incident_key)
+          .select("*")
+          .maybeSingle();
+        if (!ierr){
+          incident = idata || { ...(incident||{}), started_at: minIso };
+          startIncidentClock();
+        }
+      }
+    }
+  }catch(e){ /* non-fatal */ }
+
 }
 async function loadNotes(){
   const { data, error } = await sb
@@ -2074,6 +2103,20 @@ function openCoreModal(train){
       <div class="uiLabel">Location text</div>
       <input class="uiInput" id="coreLoc" placeholder="e.g., Between X and Y / Nottingham West Jn" value="${escapeAttr(train.location_text||"")}" />
     </div>
+
+    <div class="uiCard">
+      <div class="uiLabel">Start time</div>
+      <div class="seg" style="margin-bottom:10px;">
+        ${["Add now","Add from time"].map(v=>segButton(v,v,"Add now","newtime")).join("")}
+      </div>
+      <div id="newTimePickWrap" style="display:none;">
+        <div style="color:var(--muted); font-size:12px; font-weight:900; margin-bottom:6px;">
+          Set when the train first became stranded.
+        </div>
+        <input class="uiInput" id="newStrandedDT" type="datetime-local" />
+      </div>
+    </div>
+
   `);
 
   setModalActions(`
@@ -3302,11 +3345,31 @@ function openAddTrainModal(){
   let newToc = "UNKNOWN";
   bindSeg("newtoc", (val)=>{ newToc = val; });
 
+  let timeMode = "Add now";
+  bindSeg("newtime", (val)=>{
+    timeMode = val;
+    const wrap = $("newTimePickWrap");
+    if (wrap) wrap.style.display = (timeMode === "Add from time") ? "block" : "none";
+  });
+
   $("cancelAddBtn").onclick = ()=>showModal(false);
   $("confirmAddBtn").onclick = async ()=>{
     const headcode = ($("newHeadcode").value||"").trim().toUpperCase();
-    // Auto-start incident if someone goes to add a train
-    await ensureIncidentStarted(true);
+
+    const mode = (typeof timeMode !== "undefined") ? timeMode : "Add now";
+    let strandedIso = nowISO();
+    if (mode === "Add from time"){
+      const v = ($("newStrandedDT")?.value || "").trim();
+      if (!v){ toast("Select a date/time"); return; }
+      const d = new Date(v);
+      if (isNaN(d.getTime())){ toast("Invalid date/time"); return; }
+      const nowMs = Date.now();
+      if (d.getTime() > nowMs + 60000){ toast("Time can’t be in the future"); return; }
+      strandedIso = d.toISOString();
+    }
+
+    // Auto-start incident if someone goes to add a train (use earliest known time if provided)
+    await ensureIncidentStarted(true, strandedIso);
     if (!headcode) { toast("Enter a headcode"); return; }
     const payload = {
       incident_key,
@@ -3316,9 +3379,9 @@ function openAddTrainModal(){
       line: "",
       location_text: "",
       location_risk: "unknown",
-      stranded_at: nowISO(),
+      stranded_at: strandedIso,
       plan_status: "none",
-      next_review_at: new Date(Date.now() + 20*60000).toISOString(),
+      next_review_at: new Date(new Date(strandedIso).getTime() + 20*60000).toISOString(),
       pax_load: "unknown",
       hvac_status: "unknown",
       toilet_status: "unknown",
@@ -3335,6 +3398,26 @@ function openAddTrainModal(){
     showModal(false);
     await loadAll();
     computeAndRenderAll();
+
+    // If this train was backdated earlier than the incident start, roll incident clock back.
+    try{
+      if (incident?.started_at){
+        const tMs = new Date(strandedIso).getTime();
+        const iMs = new Date(incident.started_at).getTime();
+        if (!isNaN(tMs) && !isNaN(iMs) && tMs < iMs){
+          const { data: idata, error: ierr } = await sb
+            .from("star_incidents")
+            .update({ started_at: strandedIso })
+            .eq("incident_key", incident_key)
+            .select("*")
+            .maybeSingle();
+          if (!ierr){
+            incident = idata || { ...(incident||{}), started_at: strandedIso };
+            startIncidentClock();
+          }
+        }
+      }
+    }catch(e){ /* non-fatal */ }
   };
 }
 
@@ -4081,6 +4164,7 @@ function initUI(){
   $("orgSelect").value = org_context;
   $("orgSelect").addEventListener("change", ()=>{
     org_context = $("orgSelect").value;
+    lsSet(ACTING_AS_KEY, org_context);
     lsSet("star_org", org_context);
     toast("Org context set");
     computeAndRenderAll();
