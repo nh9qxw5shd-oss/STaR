@@ -1143,18 +1143,28 @@ function fmtAgeMins(iso){
 }
 
 function hasAnyPlanData(tr){
-  // Plan data is stored in train.plan_data (JSON) in this build.
-  // Consider the "plan section fulfilled" if ANY field in Plan A/B/C has any value.
+  // "Plan section fulfilled" if ANY data exists in Plan A/B/C (any field with a value).
+  // Supports current structure: plan_data = {A:{},B:{},C:{},meta:{...}}
+  // Also supports older structure: plan_data = {plans:{A:{},B:{},C:{}}}
   let pd = tr?.plan_data;
   if (!pd) return false;
-  try { pd = (typeof pd === "string") ? JSON.parse(pd) : pd; } catch(e){ return false; }
-  const plans = pd?.plans || {};
+  try{ pd = (typeof pd === "string") ? JSON.parse(pd) : pd; }catch(e){ return false; }
+
   const hasValue = (v)=>{
     if (v === null || v === undefined) return false;
+    if (typeof v === "boolean") return true;
+    if (typeof v === "number") return true;
     if (Array.isArray(v)) return v.length > 0;
     if (typeof v === "object") return Object.values(v).some(hasValue);
     return String(v).trim() !== "";
   };
+
+  // Prefer new top-level A/B/C shape
+  if (pd && (pd.A || pd.B || pd.C)){
+    return ["A","B","C"].some(k => hasValue(pd[k]));
+  }
+  // Fallback legacy shape
+  const plans = pd?.plans || {};
   return ["A","B","C"].some(k => hasValue(plans?.[k]));
 }
 function hasPreferredAndExecuting(tr){
@@ -1237,7 +1247,7 @@ function checkTrainMilestones(){
     }
 
     // 60m: nominate + execute plan (also becomes the repeating 20-min cycle thereafter)
-    if (mins >= 60 && !ns.m60 && !hasPreferredAndExecuting(tr) && !hasAnyPlanData(tr)){
+    if (mins >= 60 && !ns.m60 && !hasPreferredAndExecuting(tr)){
       ns.m60 = true;
       pushNotif({
         train: tr,
@@ -1473,6 +1483,14 @@ let org_context = lsGet("star_org","");
 let trains = [];
 let notesByTrain = new Map();
 let incident = null;
+
+function resolveTrainRef(trainOrId){
+  if (!trainOrId) return null;
+  if (typeof trainOrId === "object") return trainOrId;
+  const id = trainOrId;
+  return (trains || []).find(t => String(t.id) === String(id)) || null;
+}
+
 
 let fText = "";
 let fStatus = "";
@@ -2081,6 +2099,9 @@ function openCoreModal(train){
 }
 
 function openRiskMatrixModal(train, opts={}){
+  train = resolveTrainRef(train) || train;
+  if (!train){ toast("Train not found."); return; }
+
   showModal(true);
   const rm = parseRiskMatrix(train) || {};
   setModalHeader(`Risk Matrix (Excel) · ${train.headcode}`, "On-board + Location + Traction → Total score → RAG");
@@ -2551,6 +2572,9 @@ function rioLinesForPDF(train){
   return lines.filter(Boolean);
 }
 function openPlanSummaryModal(trainOrId){
+  train = resolveTrainRef(train) || train;
+  if (!train){ toast("Train not found."); return; }
+
   const train = (trainOrId && typeof trainOrId === "object") ? trainOrId : ((typeof STATE !== "undefined" && Array.isArray(STATE.trains)) ? STATE.trains.find(t=> String(t.id)===String(trainOrId)) : null);
   if(!train){ toast("Plan summary unavailable (train not found)", "warn"); return; }
   showModal(true);
@@ -2628,6 +2652,9 @@ function openPlanSummaryModal(trainOrId){
 }
 
 function openPlanModal(train){
+  train = resolveTrainRef(train) || train;
+  if (!train){ toast("Train not found."); return; }
+
   showModal(true);
   setModalHeader(`Plans (A/B/C) · ${train.headcode}`, "Build options fast. Status auto-sets: forming → agreed → executing.");
 
