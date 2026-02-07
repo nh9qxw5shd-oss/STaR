@@ -1047,6 +1047,29 @@ const $ = (id) => document.getElementById(id);
 const uid = () => Math.random().toString(36).slice(2, 10).toUpperCase();
 const nowISO = () => new Date().toISOString();
 
+function isoToLocalDTValue(iso){
+  try{
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    const pad = (n)=>String(n).padStart(2,"0");
+    const yyyy = d.getFullYear();
+    const mm = pad(d.getMonth()+1);
+    const dd = pad(d.getDate());
+    const hh = pad(d.getHours());
+    const mi = pad(d.getMinutes());
+    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+  }catch(e){ return ""; }
+}
+
+function fmtUKDateTime(iso){
+  try{
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "—";
+    return d.toLocaleString("en-GB", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" });
+  }catch(e){ return "—"; }
+}
+
+
 function fmtHMS(ms){
   ms = Math.max(0, ms);
   const s = Math.floor(ms/1000);
@@ -1479,7 +1502,10 @@ function lsSet(key, value){
 }
 
 let incident_key = "";
-let org_context = lsGet("star_org","");
+const ACTING_AS_KEY = "star_acting_as";
+let org_context = lsGet(ACTING_AS_KEY, "") || lsGet("star_org","");
+if (org_context) { lsSet(ACTING_AS_KEY, org_context); }
+
 let trains = [];
 let notesByTrain = new Map();
 let incident = null;
@@ -1604,11 +1630,47 @@ function startIncidentClock(){
   }, 500);
 }
 
-async function ensureIncidentStarted(auto=false){
+
+
+async function reconcileIncidentStartFromTrains(){
+  try{
+    if (!incident_key) return;
+    if (!Array.isArray(trains) || trains.length===0) return;
+    let minIso = null;
+    for (const t of trains){
+      const iso = t?.stranded_at || t?.created_at;
+      if (!iso) continue;
+      const ms = new Date(iso).getTime();
+      if (isNaN(ms)) continue;
+      if (!minIso) minIso = iso;
+      else{
+        const cur = new Date(minIso).getTime();
+        if (!isNaN(cur) && ms < cur) minIso = iso;
+      }
+    }
+    if (!minIso) return;
+    const curIso = incident?.started_at;
+    const curMs = curIso ? new Date(curIso).getTime() : NaN;
+    const minMs = new Date(minIso).getTime();
+    if (!isNaN(minMs) && (isNaN(curMs) || minMs !== curMs)){
+      const { data, error } = await sb
+        .from("star_incidents")
+        .update({ started_at: minIso })
+        .eq("incident_key", incident_key)
+        .select("*")
+        .maybeSingle();
+      if (!error){
+        incident = data || { ...(incident||{}), started_at: minIso };
+        startIncidentClock();
+      }
+    }
+  }catch(e){ /* non-fatal */ }
+}
+async function ensureIncidentStarted(auto=false, overrideIso=null){
   // If already started, just ensure clock is running.
   if (incident?.started_at){ startIncidentClock(); return true; }
 
-  const when = nowISO();
+  const when = overrideIso || nowISO();
   const patch = { started_at: when, started_by_org: (org_context || null) };
 
   const { data, error } = await sb
@@ -1760,6 +1822,32 @@ async function loadTrains(){
     .order("created_at", { ascending: false });
   if (error) { console.error(error); toast("DB error loading trains"); return; }
   trains = data || [];
+
+  // Reconcile incident start against earliest train stranded_at (supports backdated additions)
+  try{
+    if (incident && incident.started_at && Array.isArray(trains) && trains.length){
+      const minMs = trains.reduce((acc,t)=>{
+        const ms = new Date(t.stranded_at||t.created_at||"").getTime();
+        if (isNaN(ms)) return acc;
+        return (acc===null||ms<acc) ? ms : acc;
+      }, null);
+      const iMs = new Date(incident.started_at).getTime();
+      if (minMs!==null && !isNaN(iMs) && minMs < iMs){
+        const minIso = new Date(minMs).toISOString();
+        const { data: idata, error: ierr } = await sb
+          .from("star_incidents")
+          .update({ started_at: minIso })
+          .eq("incident_key", incident_key)
+          .select("*")
+          .maybeSingle();
+        if (!ierr){
+          incident = idata || { ...(incident||{}), started_at: minIso };
+          startIncidentClock();
+        }
+      }
+    }
+  }catch(e){ /* non-fatal */ }
+
 }
 async function loadNotes(){
   const { data, error } = await sb
@@ -2074,7 +2162,28 @@ function openCoreModal(train){
       <div class="uiLabel">Location text</div>
       <input class="uiInput" id="coreLoc" placeholder="e.g., Between X and Y / Nottingham West Jn" value="${escapeAttr(train.location_text||"")}" />
     </div>
-  `);
+
+    <div class="uiCard">
+  <div class="uiLabel">Timer start point</div>
+  <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <div class="pill" style="font-weight:900; color:var(--muted);">
+      Currently: <span id="coreStartLabel"></span>
+    </div>
+    <button class="btn" id="adjustStartBtn">Adjust Timer Start Point</button>
+  </div>
+
+  <div id="coreStartEditor" style="display:none; margin-top:12px;">
+    <div style="color:var(--muted); font-size:12px; font-weight:900; margin-bottom:6px;">
+      Set when the train first became stranded (cannot be in the future).
+    </div>
+    <input class="uiInput" id="coreStrandedDT" type="datetime-local" />
+    <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:10px;">
+      <button class="btn" id="cancelAdjustStartBtn">Cancel</button>
+      <button class="btn primary" id="applyAdjustStartBtn">Apply</button>
+    </div>
+  </div>
+</div>
+`);
 
   setModalActions(`
     <button class="btn" id="backToMenuBtn">Back</button>
@@ -2083,6 +2192,42 @@ function openCoreModal(train){
 
   bindSeg("status", (val)=>{ train._draft_status = val; });
   bindSeg("toc", (val)=>{ train._draft_toc = val; });
+
+// Timer start point adjuster (no browser prompts)
+const baseIso = train.stranded_at || train.created_at || nowISO();
+const startLabelEl = document.getElementById("coreStartLabel");
+if (startLabelEl) startLabelEl.textContent = fmtUKDateTime(baseIso);
+const dtEl = document.getElementById("coreStrandedDT");
+if (dtEl) dtEl.value = isoToLocalDTValue(baseIso);
+
+const editor = document.getElementById("coreStartEditor");
+const showEditor = (on)=>{
+  if (!editor) return;
+  editor.style.display = on ? "block" : "none";
+};
+const adjBtn = document.getElementById("adjustStartBtn");
+if (adjBtn) adjBtn.onclick = ()=>showEditor(true);
+const cancelAdj = document.getElementById("cancelAdjustStartBtn");
+if (cancelAdj) cancelAdj.onclick = ()=>showEditor(false);
+const applyAdj = document.getElementById("applyAdjustStartBtn");
+if (applyAdj) applyAdj.onclick = async ()=>{
+  const v = (dtEl?.value || "").trim();
+  if (!v){ toast("Select a date/time"); return; }
+  const d = new Date(v);
+  if (isNaN(d.getTime())){ toast("Invalid date/time"); return; }
+  const nowMs = Date.now();
+  if (d.getTime() > nowMs + 60000){ toast("Time can’t be in the future"); return; }
+  const iso = d.toISOString();
+  const patch = { stranded_at: iso, next_review_at: new Date(d.getTime() + 20*60000).toISOString() };
+  await patchTrain(train.id, patch);
+  // Keep incident clock aligned to earliest train time
+  await reconcileIncidentStartFromTrains();
+  // Update label + close editor
+  if (startLabelEl) startLabelEl.textContent = fmtUKDateTime(iso);
+  showEditor(false);
+  toast("Timer start updated");
+};
+
 
   $("backToMenuBtn").onclick = ()=>renderMenuModal(train);
   $("saveCoreBtn").onclick = async ()=>{
@@ -2266,49 +2411,26 @@ function openRiskMatrixModal(train, opts={}){
   $("saveMatrixBtn").onclick = async ()=>{
     const matrixJson = JSON.stringify(draft);
 
-    // Optional: derive the existing welfare/system fields so icons work even if user only uses matrix.
-    const derived = {};
-    if (draft.rm_toilets === "no_working") derived.toilet_status = "failed";
-    if (draft.rm_toilets === "working") derived.toilet_status = "ok";
+    // Persist matrix selections into JSONB only (schema-light). We also *try* to save computed score/RAG
+    // if those columns exist, but we never require them.
+    let derivedScore = null;
+    let derivedRag = null;
+    try {
+      const tmp = computeMatrixRisk({ risk_matrix: draft });
+      if (tmp && typeof tmp.score === "number") derivedScore = tmp.score;
+      if (tmp && tmp.rag) derivedRag = tmp.rag;
+    } catch(_) {}
 
-    if (draft.rm_traction_power_available === "not_available") derived.power_status = "failed";
-    if (draft.rm_traction_power_available === "available") derived.power_status = "ok";
+    const payloadBase = { risk_matrix: matrixJson };
 
-    if (draft.rm_hvac_lighting === "no") derived.hvac_status = "failed";
-    if (draft.rm_hvac_lighting === "yes") derived.hvac_status = "ok";
-
-    if (draft.rm_pax_loading === "standing") derived.pax_load = "high";
-    if (draft.rm_pax_loading === "seated") derived.pax_load = "med";
-    if (draft.rm_pax_loading === "seats_available") derived.pax_load = "low";
-
-    const patch = {
-      risk_matrix: matrixJson,
-      ...derived
-    };
-
-    // If your DB has dedicated rm_* columns, we'll try to write them too.
-    Object.assign(patch, draft);
-
-    // Attempt save. If rm_* columns don't exist, DB will reject. We'll fall back to risk_matrix only.
-    const { error } = await sb.from("star_trains").update({ ...patch, updated_at: nowISO(), updated_by_org: (org_context||null) }).eq("id", train.id).eq("incident_key", incident_key);
+    // Save ONLY to risk_matrix JSONB to avoid schema drift (no rm_* / matrix_score columns required)
+    let { error } = await sb.from("star_trains").update(payloadBase).eq("id", train.id).eq("incident_key", incident_key);
     if (error){
-      console.warn("Matrix save full patch failed, retrying minimal:", error);
-      const { error: e2 } = await sb.from("star_trains").update({ risk_matrix: matrixJson, ...derived, updated_at: nowISO(), updated_by_org: (org_context||null) }).eq("id", train.id).eq("incident_key", incident_key);
-      if (e2){
-        // Final fallback: store only the matrix JSON (skip derived quick fields if your schema doesn't have them)
-        const { error: e3 } = await sb.from("star_trains")
-          .update({ risk_matrix: matrixJson, updated_at: nowISO(), updated_by_org: (org_context||null) })
-          .eq("id", train.id).eq("incident_key", incident_key);
-
-        if (e3){
-          console.error(e3);
-          toast("Matrix save failed (add risk_matrix column + RLS update)");
-          return;
-        }
-      }
+      console.error(error);
+      toast("Matrix save failed (star_trains.risk_matrix save)");
+      return;
     }
-
-    // Refresh local state
+// Refresh local state
     await loadAll();
     computeAndRenderAll();
     toast("Risk Matrix saved");
@@ -2572,11 +2694,8 @@ function rioLinesForPDF(train){
   return lines.filter(Boolean);
 }
 function openPlanSummaryModal(trainOrId){
-  train = resolveTrainRef(train) || train;
+  const train = resolveTrainRef(trainOrId) || ((trainOrId && typeof trainOrId === "object") ? trainOrId : ((typeof STATE !== "undefined" && Array.isArray(STATE.trains)) ? STATE.trains.find(t=> String(t.id)===String(trainOrId)) : null));
   if (!train){ toast("Train not found."); return; }
-
-  const train = (trainOrId && typeof trainOrId === "object") ? trainOrId : ((typeof STATE !== "undefined" && Array.isArray(STATE.trains)) ? STATE.trains.find(t=> String(t.id)===String(trainOrId)) : null);
-  if(!train){ toast("Plan summary unavailable (train not found)", "warn"); return; }
   showModal(true);
   const pd = parsePlanDataFromTrain(train);
   const pref = getPreferredPlanKey(train);
@@ -3302,11 +3421,31 @@ function openAddTrainModal(){
   let newToc = "UNKNOWN";
   bindSeg("newtoc", (val)=>{ newToc = val; });
 
+  let timeMode = "Add now";
+  bindSeg("newtime", (val)=>{
+    timeMode = val;
+    const wrap = $("newTimePickWrap");
+    if (wrap) wrap.style.display = (timeMode === "Add from time") ? "block" : "none";
+  });
+
   $("cancelAddBtn").onclick = ()=>showModal(false);
   $("confirmAddBtn").onclick = async ()=>{
     const headcode = ($("newHeadcode").value||"").trim().toUpperCase();
-    // Auto-start incident if someone goes to add a train
-    await ensureIncidentStarted(true);
+
+    const mode = (typeof timeMode !== "undefined") ? timeMode : "Add now";
+    let strandedIso = nowISO();
+    if (mode === "Add from time"){
+      const v = ($("newStrandedDT")?.value || "").trim();
+      if (!v){ toast("Select a date/time"); return; }
+      const d = new Date(v);
+      if (isNaN(d.getTime())){ toast("Invalid date/time"); return; }
+      const nowMs = Date.now();
+      if (d.getTime() > nowMs + 60000){ toast("Time can’t be in the future"); return; }
+      strandedIso = d.toISOString();
+    }
+
+    // Auto-start incident if someone goes to add a train (use earliest known time if provided)
+    await ensureIncidentStarted(true, strandedIso);
     if (!headcode) { toast("Enter a headcode"); return; }
     const payload = {
       incident_key,
@@ -3316,9 +3455,9 @@ function openAddTrainModal(){
       line: "",
       location_text: "",
       location_risk: "unknown",
-      stranded_at: nowISO(),
+      stranded_at: strandedIso,
       plan_status: "none",
-      next_review_at: new Date(Date.now() + 20*60000).toISOString(),
+      next_review_at: new Date(new Date(strandedIso).getTime() + 20*60000).toISOString(),
       pax_load: "unknown",
       hvac_status: "unknown",
       toilet_status: "unknown",
@@ -3335,6 +3474,26 @@ function openAddTrainModal(){
     showModal(false);
     await loadAll();
     computeAndRenderAll();
+
+    // If this train was backdated earlier than the incident start, roll incident clock back.
+    try{
+      if (incident?.started_at){
+        const tMs = new Date(strandedIso).getTime();
+        const iMs = new Date(incident.started_at).getTime();
+        if (!isNaN(tMs) && !isNaN(iMs) && tMs < iMs){
+          const { data: idata, error: ierr } = await sb
+            .from("star_incidents")
+            .update({ started_at: strandedIso })
+            .eq("incident_key", incident_key)
+            .select("*")
+            .maybeSingle();
+          if (!ierr){
+            incident = idata || { ...(incident||{}), started_at: strandedIso };
+            startIncidentClock();
+          }
+        }
+      }
+    }catch(e){ /* non-fatal */ }
   };
 }
 
@@ -4081,6 +4240,7 @@ function initUI(){
   $("orgSelect").value = org_context;
   $("orgSelect").addEventListener("change", ()=>{
     org_context = $("orgSelect").value;
+    lsSet(ACTING_AS_KEY, org_context);
     lsSet("star_org", org_context);
     toast("Org context set");
     computeAndRenderAll();
