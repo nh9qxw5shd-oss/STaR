@@ -80,7 +80,7 @@ export function currentOrg(): string {
 // ------------------------------------------------------------- actions
 
 // The palette and the top bar ask the board to act through window events.
-export type BoardAction = "add-train" | "export-pdf" | "copy-link" | "new-incident" | "close-incident";
+export type BoardAction = "add-train" | "export-pdf" | "copy-link" | "new-incident" | "rename-incident" | "close-incident";
 const ACTION_EVENT = "star:action";
 
 export function requestAction(a: BoardAction): void {

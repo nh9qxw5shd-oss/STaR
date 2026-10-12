@@ -33,6 +33,7 @@ import { TOCS, type StarNote, type StarTrain } from "@/lib/star/types";
 export interface DrawerApi {
   patch: (train: StarTrain, patch: Partial<StarTrain>) => Promise<boolean>;
   addNote: (train: StarTrain, text: string) => Promise<boolean>;
+  reopen: (train: StarTrain) => Promise<boolean>;
   startChanged: () => Promise<void>;
 }
 
@@ -73,7 +74,7 @@ function Section({ title, hint, children, id, highlight }: { title: string; hint
 
 // ------------------------------------------------------------------ menu
 
-function MenuView({ train, go, onCloseTrain }: { train: StarTrain; go: (o: OpenView) => void; onCloseTrain: () => void }) {
+function MenuView({ train, go, onCloseTrain, onReopenTrain }: { train: StarTrain; go: (o: OpenView) => void; onCloseTrain: () => void; onReopenTrain: () => void }) {
   const pref = preferredKey(train);
   const rows: { view: View; name: string; desc: string }[] = [
     { view: "core", name: "Core details", desc: "Status, TOC, line, location label and the timer start point" },
@@ -100,6 +101,15 @@ function MenuView({ train, go, onCloseTrain }: { train: StarTrain; go: (o: OpenV
           <span>
             <span className="block font-semibold text-poor">Close train</span>
             <span className="block text-xs text-dim">Marks the tile closed and freezes its timer. Nothing is deleted.</span>
+          </span>
+          <ChevronRight size={16} className="shrink-0 text-faint" />
+        </button>
+      )}
+      {train.status === "closed" && (
+        <button type="button" className="card card-link flex w-full items-center justify-between gap-3 p-3 text-left" onClick={onReopenTrain}>
+          <span>
+            <span className="block font-semibold text-good">Reopen train</span>
+            <span className="block text-xs text-dim">Back into the active counts; its timer runs on from when it was stranded and checks resume.</span>
           </span>
           <ChevronRight size={16} className="shrink-0 text-faint" />
         </button>
@@ -321,7 +331,9 @@ function PlansView({ train, api, done, initialTab }: { train: StarTrain; api: Dr
   };
 
   async function save() {
-    const next: PlanData = { ...pd, meta: { ...pd.meta, activeTab: tab, preferred, actioning } };
+    // Notes are typed freely (spaces and line breaks kept) and tidied only here, on save.
+    const tidy = Object.fromEntries(PLAN_KEYS.map((k) => [k, { ...pd[k], notes: pd[k].notes == null ? pd[k].notes : clampStr(pd[k].notes, 240) }])) as Pick<PlanData, PlanKey>;
+    const next: PlanData = { ...pd, ...tidy, meta: { ...pd.meta, activeTab: tab, preferred, actioning } };
     const ok = await api.patch(train, {
       plan_status: status,
       location_risk: locRisk,
@@ -375,7 +387,7 @@ function PlansView({ train, api, done, initialTab }: { train: StarTrain; api: Dr
         </div>
       </Section>
       <Field label="Plan notes (short)" hint={`${(p.notes ?? "").length}/240`}>
-        <textarea className="input min-h-[84px]" maxLength={240} value={p.notes ?? ""} onChange={(e) => setPlan({ notes: clampStr(e.target.value, 240) })} placeholder="Key steps, access, constraints, who owns what…" />
+        <textarea className="input min-h-[84px]" maxLength={240} value={p.notes ?? ""} onChange={(e) => setPlan({ notes: e.target.value.slice(0, 240) })} placeholder="Key steps, access, constraints, who owns what…" />
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Section title="Preferred option" hint={<>A preferred plan sets the status to <b>AGREED</b> on save.</>}>
@@ -624,6 +636,11 @@ export function TrainDrawer({
     }
   }
 
+  async function reopenTrain() {
+    if (!train) return;
+    if (await api.reopen(train)) onClose();
+  }
+
   return (
     <Drawer
       open
@@ -643,7 +660,7 @@ export function TrainDrawer({
       subtitle={risk ? `Risk ${risk.score} · ${risk.rag.toUpperCase()} · acting as ${org || "not set"}` : undefined}
     >
       <div key={view} className="fade-in">
-        {view === "menu" && <MenuView train={train} go={go} onCloseTrain={closeTrain} />}
+        {view === "menu" && <MenuView train={train} go={go} onCloseTrain={closeTrain} onReopenTrain={reopenTrain} />}
         {view === "core" && <CoreView train={train} api={api} done={back} />}
         {view === "matrix" && <MatrixView train={train} api={api} done={back} startTab={open.tab} focus={open.focus} />}
         {view === "summary" && <SummaryView train={train} go={go} />}

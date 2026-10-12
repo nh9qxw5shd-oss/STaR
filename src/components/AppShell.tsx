@@ -13,7 +13,7 @@ import { useHydrated, useLocalStorage, useNow } from "@/lib/hooks";
 import { NAV } from "@/lib/nav";
 import { requestAction, useBoard, useOrg } from "@/lib/star/store";
 import { ORGS } from "@/lib/star/types";
-import { fmtTab } from "@/lib/star/format";
+import { fmtTab, incidentLabel } from "@/lib/star/format";
 import { StatusDot } from "@/components/ui";
 import { CommandPalette, openPalette } from "@/components/CommandPalette";
 
@@ -62,7 +62,14 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         <div key={g.label}>
           <div className="nav-group-label">{g.label}</div>
           {g.items.map((it) => (
-            <Link key={it.href} href={current ? `/?i=${encodeURIComponent(current)}` : it.href} className="nav-item" aria-current={!current && path === it.href ? "page" : undefined} title={it.desc} onClick={onNavigate}>
+            <Link
+              key={it.href}
+              href={it.href === "/" && current ? `/?i=${encodeURIComponent(current)}` : it.href}
+              className="nav-item"
+              aria-current={path === it.href && (it.href !== "/" || !current) ? "page" : undefined}
+              title={it.desc}
+              onClick={onNavigate}
+            >
               <it.icon size={17} strokeWidth={2.1} />
               <span className="nav-label">{it.label}</span>
             </Link>
@@ -81,7 +88,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         >
           <StatusDot color="var(--poor)" pulse={inc.incident_key === current} />
           <span className="nav-label flex min-w-0 flex-1 items-baseline justify-between gap-2">
-            <span className="truncate font-mono text-[13px]">{inc.incident_key}</span>
+            <span className={`truncate text-[13px] ${inc.name ? "font-semibold" : "font-mono"}`}>{incidentLabel(inc)}</span>
             <span className="shrink-0 text-[11px] text-faint">{fmtTab(inc.started_at)}</span>
           </span>
         </Link>

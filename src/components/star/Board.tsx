@@ -4,8 +4,9 @@
 // the per-train check reminders, and the drawers for adding a train and working one.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { BellRing, FileDown, Link2, Plus, Siren, TrainFront, X, XCircle } from "lucide-react";
+import { BellRing, FileDown, History, Link2, Pencil, Plus, Siren, TrainFront, X, XCircle } from "lucide-react";
 import { Chips, Drawer, EmptyState, Field, PageHeader, PageSkeleton, Stat } from "@/components/ui";
 import { useDialog, useToast } from "@/components/uiFeedback";
 import { TrainCard, type OpenView } from "./TrainCard";
@@ -15,13 +16,16 @@ import { getBoard, onAction, onOpenTrain, setBoard, useBoard, useOrg, currentOrg
 import * as db from "@/lib/star/data";
 import { riskFromTrain, type Rag } from "@/lib/star/risk";
 import { checkTrain, NOTICE_TEXT, type NoticeKey, type TrainCheckState } from "@/lib/star/reminders";
-import { fmtDateTime, fmtTab, newKey, toLocalInput } from "@/lib/star/format";
+import { fmtDateTime, fmtTab, incidentLabel, incidentName, newKey, toLocalInput } from "@/lib/star/format";
 import { exportIncidentPdf } from "@/lib/star/pdf";
 import { sb } from "@/lib/supabase";
 import { TOCS, type StarTrain } from "@/lib/star/types";
 import type { PlanKey } from "@/lib/star/plans";
 
 const POLL_MS = 20000;
+
+// Names typed for a new incident, held until its row is created on first open.
+const pendingNames = new Map<string, string>();
 
 interface Reminder {
   id: string;
@@ -173,7 +177,8 @@ export default function Board() {
       }
       setBoard({ key, loading: true, trains: [], notes: new Map() });
       try {
-        const inc = await db.ensureIncident(key, currentOrg());
+        const inc = await db.ensureIncident(key, currentOrg(), pendingNames.get(key) ?? null);
+        pendingNames.delete(key);
         const [trains, notes] = await Promise.all([db.loadTrains(inc), db.loadNotes(inc)]);
         if (!alive) return;
         setBoard({ key, incident: inc, trains, notes, loading: false });
@@ -241,19 +246,70 @@ export default function Board() {
     [reload, toast],
   );
 
+  const reopenTrain = useCallback(
+    async (train: StarTrain) => {
+      try {
+        await db.reopenTrain(train.incident_key, train.id, currentOrg());
+        checkState.current.delete(train.id);
+        toast.success(`${train.headcode ?? "Train"} reopened`, "Back in the active counts; next check in 20 minutes.");
+        await reload();
+        return true;
+      } catch (e) {
+        toast.error("Could not reopen the train", e instanceof Error ? e.message : String(e));
+        return false;
+      }
+    },
+    [reload, toast],
+  );
+
   const api: DrawerApi & { setOpen: (o: (OpenView & { planTab?: PlanKey }) | null) => void } = {
     patch,
     addNote,
+    reopen: reopenTrain,
     startChanged: reconcileStart,
     setOpen: (o) => setDrawer((d) => (d && o ? { ...d, open: o } : null)),
   };
 
   // ------------------------------------------------------------ actions
 
-  const newIncident = useCallback(() => {
-    router.push(`/?i=${encodeURIComponent(newKey())}`);
-    toast.success("Incident created", "Add a train to start its clock.");
-  }, [router, toast]);
+  const newIncident = useCallback(async (): Promise<boolean> => {
+    const name = await dialog.prompt({
+      title: "New incident",
+      body: "Give it a name the desk will recognise (optional). It can be changed later; the link uses a generated key either way.",
+      label: "Incident name",
+      placeholder: "e.g. Loughborough OLE, Up Fast blocked",
+      confirmLabel: "Create incident",
+    });
+    if (name === null) return false;
+    const key = newKey();
+    const tidy = incidentName(name);
+    if (tidy) pendingNames.set(key, tidy);
+    router.push(`/?i=${encodeURIComponent(key)}`);
+    toast.success(tidy ? `${tidy} created` : "Incident created", "Add a train to start its clock.");
+    return true;
+  }, [dialog, router, toast]);
+
+  const renameIncident = useCallback(async () => {
+    const { incident, key: k } = getBoard();
+    if (!incident || !k) return;
+    const name = await dialog.prompt({
+      title: "Name this incident",
+      body: <>The key <span className="font-mono">{k}</span> and its link stay the same. Leave blank to show the key.</>,
+      label: "Incident name",
+      initial: incident.name ?? "",
+      placeholder: "e.g. Loughborough OLE, Up Fast blocked",
+      confirmLabel: "Save name",
+    });
+    if (name === null) return;
+    try {
+      const inc = await db.renameIncident(k, name);
+      if (inc) setBoard({ incident: inc });
+      await refreshOpen();
+      toast.success(incidentName(name) ? "Incident renamed" : "Name cleared");
+    } catch (e) {
+      toast.error("Could not rename", e instanceof Error ? e.message : String(e));
+    }
+  }, [dialog, refreshOpen, toast]);
 
   const addTrain = useCallback(
     async (headcode: string, toc: string, iso: string) => {
@@ -312,15 +368,15 @@ export default function Board() {
     const { incident, key: k } = getBoard();
     if (!incident || !k) return;
     const ok = await dialog.confirm({
-      title: `Close incident ${k}?`,
-      body: "A final PDF is exported first. The board is then cleared and this session archived for later review; nothing is deleted.",
+      title: `Close incident ${incidentLabel(incident, k)}?`,
+      body: "A final PDF is exported first. The board is then cleared and archived; it stays viewable (and can be reopened) from History. Nothing is deleted.",
       confirmLabel: "Close incident",
       danger: true,
     });
     if (!ok) return;
     try {
       const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-      await exportPdf(`STaR_Incident_${k}_FINAL_${ts}.pdf`);
+      await exportPdf(`STaR_Incident_${pdfName(incident.name, k)}_FINAL_${ts}.pdf`);
       toast.success("Final PDF exported");
     } catch {
       toast.error("Final PDF export failed", "The incident will still close.");
@@ -329,16 +385,15 @@ export default function Board() {
       await db.closeIncident(incident, currentOrg());
       router.replace("/");
       await refreshOpen();
-      toast.success("Incident closed", "Board cleared and archived.");
+      toast.success("Incident closed", "Board cleared and archived to History.");
     } catch (e) {
       toast.error("Close failed", e instanceof Error ? e.message : String(e));
     }
   }, [dialog, exportPdf, refreshOpen, router, toast]);
 
-  const openAdd = useCallback(() => {
+  const openAdd = useCallback(async () => {
     if (!getBoard().key) {
-      newIncident();
-      setTimeout(() => setAddOpen(true), 400);
+      if (await newIncident()) setTimeout(() => setAddOpen(true), 400);
       return;
     }
     setAddOpen(true);
@@ -347,13 +402,14 @@ export default function Board() {
   useEffect(
     () =>
       onAction((a) => {
-        if (a === "add-train") openAdd();
-        else if (a === "new-incident") newIncident();
+        if (a === "add-train") void openAdd();
+        else if (a === "new-incident") void newIncident();
+        else if (a === "rename-incident") void renameIncident();
         else if (a === "export-pdf") void exportPdf().catch(() => toast.error("PDF export failed"));
         else if (a === "copy-link") void copyLink();
         else if (a === "close-incident") void closeIncident();
       }),
-    [openAdd, newIncident, exportPdf, copyLink, closeIncident, toast],
+    [openAdd, newIncident, renameIncident, exportPdf, copyLink, closeIncident, toast],
   );
   useEffect(() => onOpenTrain((id, view) => setDrawer({ trainId: id, open: { view: view as OpenView["view"] } })), []);
 
@@ -421,10 +477,24 @@ export default function Board() {
     <div className="space-y-5">
       <PageHeader
         eyebrow="Stranded Train Risk"
-        title={key ? <span className="font-mono">{key}</span> : "Stranded trains"}
-        subtitle={key ? (inc?.started_at ? `Incident started ${fmtDateTime(inc.started_at)}${inc.started_by_org ? ` by ${inc.started_by_org}` : ""}` : "Not started: adding a train starts the clock") : "Pick an open incident or start a new one."}
+        title={key ? inc?.name ? <span className="break-words">{inc.name}</span> : <span className="font-mono">{key}</span> : "Stranded trains"}
+        subtitle={
+          key
+            ? `${inc?.name ? `Key ${key} · ` : ""}${inc?.started_at ? `Incident started ${fmtDateTime(inc.started_at)}${inc.started_by_org ? ` by ${inc.started_by_org}` : ""}` : "Not started: adding a train starts the clock"}`
+            : "Pick an open incident or start a new one. Closed incidents are in History."
+        }
         actions={
           <div className="flex flex-wrap gap-2">
+            {key && (
+              <button className="btn gap-1.5" onClick={renameIncident} disabled={!inc}>
+                <Pencil size={15} /> {inc?.name ? "Rename" : "Name"}
+              </button>
+            )}
+            {!key && (
+              <Link className="btn gap-1.5" href="/history">
+                <History size={15} /> History
+              </Link>
+            )}
             {key && (
               <button className="btn gap-1.5" onClick={copyLink}>
                 <Link2 size={15} /> Copy link
@@ -440,7 +510,7 @@ export default function Board() {
                 <XCircle size={15} /> Close incident
               </button>
             )}
-            <button className="btn btn-primary gap-1.5" onClick={openAdd}>
+            <button className="btn btn-primary gap-1.5" onClick={() => void openAdd()}>
               <Plus size={15} /> Add train
             </button>
           </div>
@@ -452,14 +522,14 @@ export default function Board() {
         {board.open.map((i) => (
           <button key={i.incident_key} type="button" className="chip" aria-pressed={i.incident_key === key} onClick={() => router.push(`/?i=${encodeURIComponent(i.incident_key)}`)} title={`Started ${fmtTab(i.started_at)}`}>
             <span className="dot" style={{ color: "var(--poor)" }} />
-            <span className="font-mono">{i.incident_key}</span>
+            <span className={i.name ? "max-w-[220px] truncate font-semibold" : "font-mono"}>{incidentLabel(i)}</span>
             <span className="text-faint">
               {[i.started_by_org || i.created_by_org, fmtTab(i.started_at)].filter(Boolean).join(" · ")}
             </span>
           </button>
         ))}
         {board.open.length === 0 && <span className="text-xs text-faint">None open. Add a train to start one.</span>}
-        <button type="button" className="chip" onClick={newIncident}>
+        <button type="button" className="chip" onClick={() => void newIncident()}>
           <Plus size={13} /> New incident
         </button>
       </div>
@@ -558,7 +628,7 @@ export default function Board() {
               hint={board.trains.length ? "Clear the filters to see every train." : "Add the first stranded train; its timer and the incident clock start straight away."}
               action={
                 !board.trains.length && (
-                  <button className="btn btn-primary gap-1.5" onClick={openAdd}>
+                  <button className="btn btn-primary gap-1.5" onClick={() => void openAdd()}>
                     <Plus size={15} /> Add train
                   </button>
                 )
@@ -567,7 +637,7 @@ export default function Board() {
           ) : (
             <div className="stagger grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
               {list.map(({ t }) => (
-                <TrainCard key={t.id} train={t} notes={board.notes.get(t.id) ?? []} org={org} onOpen={(o) => setDrawer({ trainId: t.id, open: o })} />
+                <TrainCard key={t.id} train={t} notes={board.notes.get(t.id) ?? []} org={org} onOpen={(o) => setDrawer({ trainId: t.id, open: o })} onReopen={() => void reopenTrain(t)} />
               ))}
             </div>
           )}
@@ -580,7 +650,7 @@ export default function Board() {
           title={board.open.length ? "Choose an incident" : "No open incidents"}
           hint={board.open.length ? "Open incidents are listed above and in the sidebar." : "Adding a train creates an incident and starts its clock."}
           action={
-            <button className="btn btn-primary gap-1.5" onClick={openAdd}>
+            <button className="btn btn-primary gap-1.5" onClick={() => void openAdd()}>
               <Plus size={15} /> Add train
             </button>
           }
@@ -591,4 +661,10 @@ export default function Board() {
       <TrainDrawer train={drawerTrain as StarTrain | null} notes={drawerTrain ? (board.notes.get(drawerTrain.id) ?? []) : []} org={org} open={drawer?.open ?? null} onClose={() => setDrawer(null)} api={api} />
     </div>
   );
+}
+
+/** A filename-safe form of the incident's name, else its key. */
+function pdfName(name: string | null | undefined, key: string): string {
+  const n = (name ?? "").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+  return n ? `${n}_${key}` : key;
 }

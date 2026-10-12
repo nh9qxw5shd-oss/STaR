@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { computeLegacyRisk, computeMatrixRisk, matrixPicks, riskFromTrain } from "./risk.ts";
 import { computePlanStatus, needsRioChecklist, parsePlanData, planBullets, preferredKey, rioLines } from "./plans.ts";
 import { checkTrain, type TrainCheckState } from "./reminders.ts";
+import { groupSessions, matchesSession } from "./history.ts";
+import { incidentLabel, incidentName } from "./format.ts";
 import type { StarTrain } from "./types.ts";
 
 const base = (o: Partial<StarTrain> = {}): StarTrain =>
@@ -88,4 +90,40 @@ test("check cadence: 20 / 30 / 60 then every 20 minutes", () => {
 
 test("closed trains are left alone", () => {
   assert.deepEqual(checkTrain(base({ status: "closed" }), Date.now(), {}), { nextReviewAt: null, notices: [] });
+});
+
+test("closed incidents group by session, newest close first", () => {
+  const row = (incident_key: string, session_id: string, headcode: string, stranded_at: string, archived_at: string, org = "NR") =>
+    ({ incident_key, session_id, headcode, stranded_at, created_at: stranded_at, archived_at, updated_by_org: org });
+  const out = groupSessions(
+    [
+      row("AAAA1111", "S1", "1A23", "2026-10-01T10:00:00.000Z", "2026-10-01T12:00:00.000Z"),
+      row("AAAA1111", "S1", "2B45", "2026-10-01T09:30:00.000Z", "2026-10-01T12:00:00.000Z"),
+      row("AAAA1111", "S2", "1C01", "2026-10-05T08:00:00.000Z", "2026-10-05T09:00:00.000Z", "EMR"),
+      row("BBBB2222", "S9", "1D02", "2026-10-03T08:00:00.000Z", "2026-10-03T10:00:00.000Z"),
+    ],
+    new Map([["AAAA1111", "Loughborough OLE"]]),
+  );
+  assert.deepEqual(
+    out.map((s) => [s.incident_key, s.session_id, s.trains]),
+    [["AAAA1111", "S2", 1], ["BBBB2222", "S9", 1], ["AAAA1111", "S1", 2]],
+  );
+  const s1 = out[2];
+  assert.equal(s1.started_at, "2026-10-01T09:30:00.000Z");
+  assert.equal(s1.name, "Loughborough OLE");
+  assert.deepEqual(s1.headcodes, ["1A23", "2B45"]);
+  assert.equal(out[0].closed_by_org, "EMR");
+  assert.equal(out[1].name, null);
+  assert.ok(matchesSession(s1, "lough"));
+  assert.ok(matchesSession(s1, "2b45"));
+  assert.ok(!matchesSession(s1, "1C01"));
+});
+
+test("incident names are tidied; the label falls back to the key", () => {
+  assert.equal(incidentName("  Loughborough   OLE\n Up Fast "), "Loughborough OLE Up Fast");
+  assert.equal(incidentName("   "), null);
+  assert.equal(incidentName("x".repeat(80))?.length, 60);
+  assert.equal(incidentLabel({ incident_key: "K1", name: "Named" }), "Named");
+  assert.equal(incidentLabel({ incident_key: "K1", name: null }), "K1");
+  assert.equal(incidentLabel(null, "K2"), "K2");
 });

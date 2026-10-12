@@ -3,7 +3,7 @@
 // One stranded train: headcode, risk, plan, live timer, flags, the latest notes and a menu into
 // its modules. Flags jump straight to the matrix row or the map they relate to.
 
-import { Bath, Lightbulb, Map as MapIcon, MoreHorizontal, NotebookPen, ThermometerSnowflake, Users } from "lucide-react";
+import { Bath, Lightbulb, Map as MapIcon, MoreHorizontal, NotebookPen, RotateCcw, ThermometerSnowflake, Users } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge, StatusDot } from "@/components/ui";
 import { Timer } from "./Timer";
@@ -25,7 +25,7 @@ function Flag({ title, onClick, tone, children }: { title: string; onClick: () =
   );
 }
 
-export function TrainCard({ train, notes, org, onOpen }: { train: StarTrain; notes: StarNote[]; org: string; onOpen: (o: OpenView) => void }) {
+export function TrainCard({ train, notes, org, onOpen, onReopen }: { train: StarTrain; notes: StarNote[]; org: string; onOpen: (o: OpenView) => void; onReopen?: () => void }) {
   const risk = riskFromTrain(train);
   const closed = train.status === "closed";
   const start = train.stranded_at || train.created_at;
@@ -74,6 +74,11 @@ export function TrainCard({ train, notes, org, onOpen }: { train: StarTrain; not
             <span className="max-w-[220px] truncate">{planText}</span>
           </button>
           {closed && <Badge color="var(--poor)">Closed</Badge>}
+          {closed && onReopen && (
+            <button type="button" className="btn btn-sm gap-1.5" onClick={onReopen} title="Reopen this train">
+              <RotateCcw size={13} /> Reopen
+            </button>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-1.5 text-xs">

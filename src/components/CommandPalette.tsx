@@ -4,12 +4,12 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, CornerDownLeft, FileDown, Link2, LucideIcon, Plus, Search, Siren, TrainFront, XCircle } from "lucide-react";
+import { ArrowRight, CornerDownLeft, FileDown, Link2, LucideIcon, Pencil, Plus, Search, Siren, TrainFront, XCircle } from "lucide-react";
 import { useHotkey } from "@/lib/hooks";
 import { NAV_ITEMS } from "@/lib/nav";
 import { BoardAction, requestAction, requestOpenTrain, useBoard } from "@/lib/star/store";
 import { riskFromTrain } from "@/lib/star/risk";
-import { fmtTab } from "@/lib/star/format";
+import { fmtTab, incidentLabel } from "@/lib/star/format";
 
 const OPEN_EVENT = "star:palette";
 export function openPalette() {
@@ -72,15 +72,16 @@ export function CommandPalette() {
       actions.push(
         act("export-pdf", "Export incident PDF", FileDown, "Overview plus a page per train", "pdf export print report"),
         act("copy-link", "Copy incident link", Link2, "Share this board", "copy link url share"),
+        act("rename-incident", "Name incident", Pencil, "Give this incident a recognisable name", "rename name title label"),
         act("close-incident", "Close incident", XCircle, "Exports a final PDF, archives the board", "close end archive finish"),
       );
     }
-    const pages: Item[] = NAV_ITEMS.map((n) => ({ id: `p-${n.href}`, group: "Pages", title: n.label, hint: n.desc, icon: n.icon, run: () => router.push(board.key ? `/?i=${encodeURIComponent(board.key)}` : n.href) }));
+    const pages: Item[] = NAV_ITEMS.map((n) => ({ id: `p-${n.href}`, group: "Pages", title: n.label, hint: n.desc, icon: n.icon, run: () => router.push(n.href === "/" && board.key ? `/?i=${encodeURIComponent(board.key)}` : n.href) }));
     const incidents: Item[] = board.open.map((inc) => ({
       id: `i-${inc.incident_key}`,
       group: "Open incidents",
-      title: inc.incident_key,
-      hint: [inc.started_by_org || inc.created_by_org, fmtTab(inc.started_at)].filter(Boolean).join(" · "),
+      title: incidentLabel(inc),
+      hint: [inc.name ? inc.incident_key : null, inc.started_by_org || inc.created_by_org, fmtTab(inc.started_at)].filter(Boolean).join(" · "),
       icon: Siren,
       keywords: "incident",
       run: () => router.push(`/?i=${encodeURIComponent(inc.incident_key)}`),

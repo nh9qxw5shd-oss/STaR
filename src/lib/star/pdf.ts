@@ -48,8 +48,9 @@ export async function exportIncidentPdf(opts: {
   y += 18;
   const started = incident?.started_at ?? null;
   for (const line of [
+    incident?.name ? `Incident: ${incident.name}` : "",
     `Incident key: ${incident?.incident_key ?? ""}`,
-    `Status: ${started ? "active" : "inactive"}`,
+    `Status: ${incident?.closed_at ? "closed" : started ? "active" : "inactive"}`,
     `Started: ${started ? fmtDateTime(started) : "Not started"}`,
     incident?.closed_at ? `Closed: ${fmtDateTime(incident.closed_at)}` : "",
     org ? `Context org: ${org}` : "",
@@ -63,7 +64,8 @@ export async function exportIncidentPdf(opts: {
   doc.text("Snapshot", margin, y);
   y += 14;
   doc.setFont("helvetica", "normal");
-  doc.text(`Incident elapsed: ${started ? minutesSince(started) : 0} min`, margin, y);
+  const ended = incident?.closed_at && started ? Math.max(0, Math.round((new Date(incident.closed_at).getTime() - new Date(started).getTime()) / 60000)) : null;
+  doc.text(ended != null ? `Incident duration: ${ended} min` : `Incident elapsed: ${started ? minutesSince(started) : 0} min`, margin, y);
   y += 14;
   doc.text(`Trains tracked: ${trains.length} (active ${active}, closed ${trains.length - active})`, margin, y);
   y += 18;

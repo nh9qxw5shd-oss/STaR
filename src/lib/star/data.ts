@@ -6,14 +6,16 @@
 
 import { sb } from "../supabase";
 import { newKey } from "./format.ts";
-import type { StarIncident, StarNote, StarTrain } from "./types.ts";
+import { incidentName } from "./format.ts";
+import { groupSessions, type ArchivedTrainRow } from "./history.ts";
+import type { ClosedSession, StarIncident, StarNote, StarTrain } from "./types.ts";
 
 const now = () => new Date().toISOString();
 
 export async function loadOpenIncidents(): Promise<StarIncident[]> {
   const { data, error } = await sb()
     .from("star_incidents")
-    .select("id, incident_key, created_at, created_by_org, started_at, started_by_org, current_session_id, closed_at, closed_by_org")
+    .select("id, incident_key, name, created_at, created_by_org, started_at, started_by_org, current_session_id, closed_at, closed_by_org")
     .not("started_at", "is", null)
     .order("started_at", { ascending: false })
     .limit(25);
@@ -22,14 +24,14 @@ export async function loadOpenIncidents(): Promise<StarIncident[]> {
 }
 
 /** Read an incident, creating it (and its first session) when it does not exist yet. */
-export async function ensureIncident(key: string, org: string): Promise<StarIncident> {
+export async function ensureIncident(key: string, org: string, name: string | null = null): Promise<StarIncident> {
   const { data: existing, error: e1 } = await sb().from("star_incidents").select("*").eq("incident_key", key).maybeSingle();
   if (e1) throw e1;
   let inc = existing as StarIncident | null;
   if (!inc) {
     const { data, error } = await sb()
       .from("star_incidents")
-      .insert({ incident_key: key, created_at: now(), created_by_org: org || null })
+      .insert({ incident_key: key, name: incidentName(name), created_at: now(), created_by_org: org || null })
       .select("*")
       .single();
     if (error) throw error;
@@ -82,7 +84,8 @@ export async function patchTrain(key: string, id: number, patch: Partial<StarTra
 
 export async function setIncidentStart(key: string, iso: string, org: string | null = null, starting = false): Promise<StarIncident | null> {
   const patch: Record<string, unknown> = { started_at: iso };
-  if (starting) patch.started_by_org = org || null;
+  // Starting (again) after a close makes the incident live: the hub reads closed_at.
+  if (starting) Object.assign(patch, { started_by_org: org || null, closed_at: null, closed_by_org: null });
   const { data, error } = await sb().from("star_incidents").update(patch).eq("incident_key", key).select("*").maybeSingle();
   if (error) throw error;
   return (data as StarIncident | null) ?? null;
@@ -125,6 +128,17 @@ export async function addTrain(inc: StarIncident, headcode: string, toc: string,
   if (error) throw error;
 }
 
+export async function renameIncident(key: string, name: string): Promise<StarIncident | null> {
+  const { data, error } = await sb().from("star_incidents").update({ name: incidentName(name) }).eq("incident_key", key).select("*").maybeSingle();
+  if (error) throw error;
+  return (data as StarIncident | null) ?? null;
+}
+
+/** Back into play: open, with the next check 20 minutes from now. */
+export async function reopenTrain(key: string, id: number, org: string): Promise<void> {
+  await patchTrain(key, id, { status: "open", next_review_at: new Date(Date.now() + 20 * 60000).toISOString() }, org);
+}
+
 export async function addNote(inc: StarIncident, trainId: number, text: string, org: string): Promise<void> {
   const { error } = await sb()
     .from("star_notes")
@@ -149,12 +163,79 @@ export async function closeIncident(inc: StarIncident, org: string): Promise<Sta
   }
   const { data, error } = await sb()
     .from("star_incidents")
-    .update({ started_at: null, started_by_org: null, current_session_id: newKey() })
+    .update({ started_at: null, started_by_org: null, current_session_id: newKey(), closed_at: at, closed_by_org: org || null })
     .eq("incident_key", inc.incident_key)
     .select("*")
     .maybeSingle();
   if (error) throw error;
   return (data as StarIncident | null) ?? null;
+}
+
+// ------------------------------------------------------------ history
+
+/** Closed incidents, newest first: every archived session, from its archived trains. */
+export async function loadClosedSessions(limit = 1000): Promise<ClosedSession[]> {
+  const { data, error } = await sb()
+    .from("star_trains")
+    .select("incident_key, session_id, headcode, stranded_at, created_at, archived_at, updated_by_org")
+    .not("archived_at", "is", null)
+    .order("archived_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  const rows = (data ?? []) as ArchivedTrainRow[];
+  const keys = [...new Set(rows.map((r) => r.incident_key))];
+  const names = new Map<string, string | null>();
+  for (let i = 0; i < keys.length; i += 150) {
+    const { data: incs, error: e2 } = await sb().from("star_incidents").select("incident_key, name").in("incident_key", keys.slice(i, i + 150));
+    if (e2) throw e2;
+    for (const inc of incs ?? []) names.set(inc.incident_key as string, (inc.name as string | null) ?? null);
+  }
+  return groupSessions(rows, names);
+}
+
+/** A closed session's trains and notes, read only. */
+export async function loadSession(key: string, session: string): Promise<{ incident: StarIncident | null; trains: StarTrain[]; notes: Map<number, StarNote[]> }> {
+  const [inc, trains, notes] = await Promise.all([
+    sb().from("star_incidents").select("*").eq("incident_key", key).maybeSingle(),
+    sb().from("star_trains").select("*").eq("incident_key", key).eq("session_id", session).order("created_at", { ascending: false }),
+    sb().from("star_notes").select("*").eq("incident_key", key).eq("session_id", session).order("created_at", { ascending: false }),
+  ]);
+  for (const r of [inc, trains, notes]) if (r.error) throw r.error;
+  const map = new Map<number, StarNote[]>();
+  for (const n of (notes.data ?? []) as StarNote[]) {
+    if (!map.has(n.train_id)) map.set(n.train_id, []);
+    map.get(n.train_id)!.push(n);
+  }
+  return { incident: (inc.data as StarIncident | null) ?? null, trains: (trains.data ?? []) as StarTrain[], notes: map };
+}
+
+/**
+ * Reopen a closed incident: its archived session becomes the board again (trains and notes
+ * un-archived, trains left as they closed so each is reopened deliberately). Refused while the
+ * incident already has a live board of its own, so nothing on it is stranded.
+ */
+export async function reopenSession(key: string, session: string, org: string): Promise<"ok" | "busy"> {
+  const { data: inc, error } = await sb().from("star_incidents").select("*").eq("incident_key", key).maybeSingle();
+  if (error) throw error;
+  const cur = inc as StarIncident | null;
+  if (cur?.current_session_id && cur.current_session_id !== session) {
+    const live = await sb().from("star_trains").select("id", { count: "exact", head: true }).eq("incident_key", key).eq("session_id", cur.current_session_id).is("archived_at", null);
+    if (live.error) throw live.error;
+    if ((live.count ?? 0) > 0) return "busy";
+  }
+  const at = now();
+  const t = await sb().from("star_trains").update({ archived_at: null, updated_at: at, updated_by_org: org || null }).eq("incident_key", key).eq("session_id", session);
+  if (t.error) throw t.error;
+  const n = await sb().from("star_notes").update({ archived_at: null }).eq("incident_key", key).eq("session_id", session);
+  if (n.error) throw n.error;
+  const { data: trains } = await sb().from("star_trains").select("stranded_at, created_at").eq("incident_key", key).eq("session_id", session);
+  const start = earliestStart((trains ?? []) as StarTrain[]) ?? at;
+  const u = await sb()
+    .from("star_incidents")
+    .update({ current_session_id: session, started_at: start, started_by_org: org || cur?.started_by_org || null, closed_at: null, closed_by_org: null })
+    .eq("incident_key", key);
+  if (u.error) throw u.error;
+  return "ok";
 }
 
 // ------------------------------------------------------------ outside services

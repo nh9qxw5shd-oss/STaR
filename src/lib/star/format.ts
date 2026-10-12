@@ -56,6 +56,17 @@ export function newKey(): string {
   return Math.random().toString(36).slice(2, 10).toUpperCase();
 }
 
+/** A desk-given incident name, tidied: single spaces, at most 60 characters, or null. */
+export function incidentName(s: string | null | undefined): string | null {
+  const t = (s ?? "").replace(/\s+/g, " ").trim().slice(0, 60).trim();
+  return t || null;
+}
+
+/** What to call an incident on screen: its name, else its key. */
+export function incidentLabel(inc: { incident_key: string; name?: string | null } | null | undefined, key = ""): string {
+  return inc?.name?.trim() || inc?.incident_key || key;
+}
+
 export function clampStr(s: string, n: number): string {
   const t = (s || "").trim();
   return t.length <= n ? t : `${t.slice(0, n - 1)}…`;

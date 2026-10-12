@@ -3,6 +3,8 @@
 export interface StarIncident {
   id: number;
   incident_key: string;
+  /** Optional name given by the desk; the key stays the incident's identity and link. */
+  name: string | null;
   created_at: string | null;
   created_by_org: string | null;
   started_at: string | null;
@@ -66,3 +68,15 @@ export const ORGS: { value: string; label: string }[] = [
   { value: "LNER", label: "LNER" },
   { value: "OTHER", label: "Other" },
 ];
+
+/** One closed (archived) session of an incident, as the history lists it. */
+export interface ClosedSession {
+  incident_key: string;
+  session_id: string;
+  name: string | null;
+  started_at: string | null;
+  closed_at: string;
+  closed_by_org: string | null;
+  headcodes: string[];
+  trains: number;
+}
