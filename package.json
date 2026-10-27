@@ -11,6 +11,7 @@
     "test": "node --test \"src/**/*.test.ts\""
   },
   "dependencies": {
+    "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.112.0",
     "jspdf": "^3.0.1",
     "jspdf-autotable": "^5.0.2",
